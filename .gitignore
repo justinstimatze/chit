@@ -1,0 +1,10 @@
+# Go
+*.exe
+*.test
+*.out
+/dist/
+
+# Local secrets / scratch — never commit ATXP credentials
+.atxp/
+*.local
+.notes/
