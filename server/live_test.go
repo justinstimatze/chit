@@ -98,3 +98,114 @@ func TestLiveIssuesRealChallenge(t *testing.T) {
 	}
 	t.Logf("live challenge issued: code=%d paymentRequestId=%s", ch.Code, prID)
 }
+
+// TestLiveSettlesRealPayment exercises a real on-demand pull settlement: the
+// authorization server pulls a (tiny) amount from a funded payer account and
+// credits the merchant's destination account.
+//
+// Unlike TestLiveIssuesRealChallenge, THIS MOVES REAL MONEY. It is the only
+// way to prove the merchant-side settle path end to end against production: a
+// charge that returns 200 (charged==true), which RequirePayment reports as
+// (nil, nil) — proceed.
+//
+// On-demand charging uses the "connection_token flow" (requirePayment.ts:29):
+// the caller's token forwarded as sourceAccountToken IS the payer's
+// connection_token (atxpAccount.ts injects this.token; types.ts:44 documents it
+// as "User's OAuth token or connection_token"). So a direct pull needs only the
+// payer's connection_token — no full client OAuth handshake.
+//
+// Env:
+//
+//	ATXP_CONNECTION        merchant/receiver account. Needs DCR (a valid
+//	                       connection token); it need NOT be funded — receiving
+//	                       does not require funds.
+//	ATXP_PAYER_CONNECTION  funded payer account (the one actually charged). If
+//	                       unset, the test self-charges using ATXP_CONNECTION as
+//	                       both payer and payee — a path smoke test, though the
+//	                       AS may treat source==destination specially.
+//	ATXP_TEST_AMOUNT       amount to charge, default "0.01". Keep it tiny; real.
+func TestLiveSettlesRealPayment(t *testing.T) {
+	merchantConn := liveConnection(t)
+	payerConn := os.Getenv("ATXP_PAYER_CONNECTION")
+	selfCharge := payerConn == ""
+	if selfCharge {
+		payerConn = merchantConn
+	}
+
+	amtStr := os.Getenv("ATXP_TEST_AMOUNT")
+	if amtStr == "" {
+		amtStr = "0.01"
+	}
+	price := mustAmount(t, amtStr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// Resolve the payer account id and confirm it is not restricted — an
+	// unfunded or fraud_blocked payer cannot be pulled from.
+	payerAcct, err := atxp.NewATXPAccount(payerConn, nil)
+	if err != nil {
+		t.Fatalf("NewATXPAccount(payer): %v", err)
+	}
+	payerID, err := payerAcct.AccountID(ctx)
+	if err != nil {
+		var re *atxp.RestrictionError
+		if errors.As(err, &re) {
+			t.Skipf("payer account restricted (%s); use a funded account", re.Code)
+		}
+		t.Fatalf("resolve payer account id: %v", err)
+	}
+
+	// Resolve the merchant/receiver account id (same account in self-charge mode).
+	merchantID := payerID
+	if !selfCharge {
+		merchantAcct, err := atxp.NewATXPAccount(merchantConn, nil)
+		if err != nil {
+			t.Fatalf("NewATXPAccount(merchant): %v", err)
+		}
+		merchantID, err = merchantAcct.AccountID(ctx)
+		if err != nil {
+			var re *atxp.RestrictionError
+			if errors.As(err, &re) {
+				t.Skipf("merchant account restricted (%s)", re.Code)
+			}
+			t.Fatalf("resolve merchant account id: %v", err)
+		}
+	}
+
+	if selfCharge {
+		t.Logf("WARNING: self-charge mode — payer == merchant == %s. "+
+			"Set ATXP_PAYER_CONNECTION to a second account for a clean payer!=payee test.", merchantID)
+	}
+
+	m, err := New(Config{
+		Destination:     StaticDestination{ID: merchantID},
+		ConnectionToken: connectionToken(t, merchantConn),
+		PayeeName:       "chit serverlive settle test",
+	})
+	if err != nil {
+		t.Fatalf("New merchant: %v", err)
+	}
+
+	t.Logf("attempting on-demand pull of %s USDC: payer=%s -> merchant=%s", price.String(), payerID, merchantID)
+
+	// SourceAccountToken is the payer's wallet-grade connection_token. It is
+	// passed in-process to the AS over HTTPS and is never logged.
+	ch, err := m.RequirePayment(ctx, PaymentRequest{
+		Price:              price,
+		User:               payerID,
+		SourceAccountToken: connectionToken(t, payerConn),
+		Resource:           "https://chit.example/serverlive-settle",
+	})
+	if err != nil {
+		t.Fatalf("RequirePayment (settle): %v", err)
+	}
+	if ch != nil {
+		// A challenge means the AS declined the on-demand pull (402) rather than
+		// settling — the opposite of what this test asserts.
+		prID, _ := ch.Data["paymentRequestId"].(string)
+		t.Fatalf("expected an on-demand settlement, got a challenge (paymentRequestId=%s); "+
+			"the AS did not pull-charge with the supplied payer token", prID)
+	}
+	t.Logf("SETTLED: pulled %s USDC from %s into %s", price.String(), payerID, merchantID)
+}
