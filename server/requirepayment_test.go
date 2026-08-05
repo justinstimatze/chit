@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -34,9 +37,18 @@ func (f *fakePaymentServer) GetBalance(context.Context, BalanceRequest) (Amount,
 }
 
 // newTestMerchant builds a Merchant wired to a fake payment server, a fixed
-// clock, and a deterministic opaque signer.
+// clock, and a deterministic opaque signer. The merchant's AuthServer points
+// to a local httptest server that answers GET /x402/supported and
+// GET /mpp/supported with `{}` (no metered variants advertised), so
+// buildOmniError's best-effort fetches for those stay hermetic instead of
+// reaching the real network.
 func newTestMerchant(t *testing.T, fps PaymentServer, min string) *Merchant {
 	t.Helper()
+	supported := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "{}")
+	}))
+	t.Cleanup(supported.Close)
+
 	dest := StaticDestination{
 		ID: "atxp:merchant-uuid",
 		Addresses: []Source{
@@ -44,7 +56,7 @@ func newTestMerchant(t *testing.T, fps PaymentServer, min string) *Merchant {
 			{Chain: "solana", Address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},
 		},
 	}
-	cfg := Config{Destination: dest, AllowHTTP: true}
+	cfg := Config{Destination: dest, AllowHTTP: true, AuthServer: supported.URL}
 	if min != "" {
 		cfg.MinimumPayment = mustAmount(t, min)
 	}

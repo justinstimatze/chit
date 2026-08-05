@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strings"
 )
 
 // Protocol settlement. Ported from protocol.ts ProtocolSettlement — the client
@@ -85,7 +84,7 @@ func (p *ProtocolSettlement) headers() http.Header {
 // Verify checks a payment credential at request start. Returns {valid:false} on
 // any non-2xx response — fail closed. Ported from ProtocolSettlement.verify.
 func (p *ProtocolSettlement) Verify(ctx context.Context, protocol Protocol, credential string, sctx *SettlementContext) (VerifyResult, error) {
-	body, err := p.buildRequestBody(protocol, credential, sctx)
+	body, err := p.buildRequestBody(protocol, credential, sctx, nil)
 	if err != nil {
 		return VerifyResult{}, err
 	}
@@ -105,9 +104,13 @@ func (p *ProtocolSettlement) Verify(ctx context.Context, protocol Protocol, cred
 }
 
 // Settle finalizes a payment at request end. A non-2xx response is an error (the
-// payment did not settle). Ported from ProtocolSettlement.settle.
-func (p *ProtocolSettlement) Settle(ctx context.Context, protocol Protocol, credential string, sctx *SettlementContext) (SettleResult, error) {
-	body, err := p.buildRequestBody(protocol, credential, sctx)
+// payment did not settle). actualAmount, when non-nil, is the metered "up-to"
+// amount actually spent (e.g. the sum of a PaymentSession's charges): for x402
+// (upto scheme only) and MPP session credentials, this settles that actual
+// amount (≤ the authorized cap) instead of the cap. nil settles the cap, as
+// before. Ported from ProtocolSettlement.settle.
+func (p *ProtocolSettlement) Settle(ctx context.Context, protocol Protocol, credential string, sctx *SettlementContext, actualAmount *Amount) (SettleResult, error) {
+	body, err := p.buildRequestBody(protocol, credential, sctx, actualAmount)
 	if err != nil {
 		return SettleResult{}, err
 	}
@@ -149,23 +152,39 @@ func (p *ProtocolSettlement) post(ctx context.Context, path string, body any) (i
 	return resp.StatusCode, respBody, nil
 }
 
-// buildRequestBody builds the protocol-specific verify/settle body. Ported from
-// ProtocolSettlement.buildRequestBody.
-func (p *ProtocolSettlement) buildRequestBody(protocol Protocol, credential string, sctx *SettlementContext) (map[string]any, error) {
+// buildRequestBody builds the protocol-specific verify/settle body. actualAmount
+// is the metered "up-to" amount (nil for verify, or for a settle carrying no
+// session). Ported from ProtocolSettlement.buildRequestBody.
+func (p *ProtocolSettlement) buildRequestBody(protocol Protocol, credential string, sctx *SettlementContext, actualAmount *Amount) (map[string]any, error) {
 	if sctx == nil {
 		sctx = &SettlementContext{}
 	}
 	switch protocol {
 	case ProtocolX402:
-		var payload any = parseCredentialJSON(credential)
+		payload := parseCredentialJSON(credential)
 		if payload == nil {
 			payload = map[string]any{"raw": credential}
 		}
-		requirements := p.selectX402Requirement(payload, sctx.PaymentRequirements)
+		requirement := selectX402Accept(payload, sctx.PaymentRequirements, p.logger)
 		out := map[string]any{"payload": payload}
-		if requirements != nil {
-			out["paymentRequirements"] = requirements
+		if requirement != nil {
+			out["paymentRequirements"] = requirement
 		}
+
+		// "up-to" semantics: settle the metered actual (≤ the Permit2 cap) via
+		// settlementOverrides.amount, in atomic micro-USDC. ONLY for the
+		// 'upto' scheme — 'exact'/EIP-3009 commits the signature to a fixed
+		// value, so overriding it would mismatch the signed authorization and
+		// the facilitator would reject it. Clamp to the cap: a meter overshoot
+		// must collect the cap, not revert the whole settle.
+		if actualAmount != nil && requirement != nil && requirement.Scheme == "upto" {
+			settleAmount := *actualAmount
+			if cap, err := AmountFromMicroString(requirement.Amount); err == nil {
+				settleAmount = Min(settleAmount, cap)
+			}
+			out["settlementOverrides"] = map[string]any{"amount": settleAmount.MicroString()}
+		}
+
 		addIf(out, "paymentRequestId", sctx.PaymentRequestID)
 		addIf(out, "sourceAccountId", sctx.SourceAccountID)
 		addIf(out, "destinationAccountId", p.destinationAccountID)
@@ -177,6 +196,15 @@ func (p *ProtocolSettlement) buildRequestBody(protocol Protocol, credential stri
 			return nil, fmt.Errorf("atxp server: MPP credential is not valid base64 JSON or raw JSON")
 		}
 		out := map[string]any{"credential": parsed}
+
+		// "up-to" semantics for TIP-1034 session credentials only: settle the
+		// metered actual (≤ the channel deposit) via settlementOverrides.amount
+		// in raw atomic µUSDC. The one-shot `charge` path ignores actualAmount
+		// and settles the pre-signed transfer as-is.
+		if actualAmount != nil && isMppSessionCredential(credential) {
+			out["settlementOverrides"] = map[string]any{"amount": actualAmount.MicroString()}
+		}
+
 		addIf(out, "paymentRequestId", sctx.PaymentRequestID)
 		addIf(out, "sourceAccountId", sctx.SourceAccountID)
 		addIf(out, "destinationAccountId", p.destinationAccountID)
@@ -188,13 +216,21 @@ func (p *ProtocolSettlement) buildRequestBody(protocol Protocol, credential stri
 			p.logger.Warnf("ATXP credential is not valid JSON, using context fallback")
 			parsed = map[string]any{}
 		}
-		var options any = sctx.Options
+		var options = sctx.Options
 		if options == nil {
 			options = parsed["options"]
 		}
 		if options == nil {
 			options = []any{}
 		}
+
+		// "up-to" semantics: when an actual metered amount is supplied, settle
+		// that (≤ the authorized cap) instead of the cap baked into each
+		// option, so /pay charges the actual.
+		if actualAmount != nil {
+			options = overrideOptionsAmount(options, actualAmount.String(), p.logger)
+		}
+
 		out := map[string]any{
 			"sourceAccountId":      firstNonEmptyAny(parsed["sourceAccountId"], sctx.SourceAccountID),
 			"destinationAccountId": firstNonEmptyStr(p.destinationAccountID, sctx.DestinationAccountID),
@@ -206,41 +242,32 @@ func (p *ProtocolSettlement) buildRequestBody(protocol Protocol, credential stri
 	}
 }
 
-// selectX402Requirement picks the single accept matching the credential's chain
-// from a full X402PaymentRequirements. Ported from the x402 branch of
-// buildRequestBody.
-func (p *ProtocolSettlement) selectX402Requirement(payload any, reqs *X402PaymentRequirements) any {
-	if reqs == nil {
-		return nil
+// overrideOptionsAmount returns options with every entry's "amount" field
+// replaced by amount. options is typically []any of map[string]any (as
+// produced by json.Unmarshal), but SettlementContext.Options is declared as
+// any specifically so a caller can supply a concretely-typed slice instead —
+// so this normalizes via a JSON round-trip rather than asserting []any
+// directly, which would otherwise silently no-op (settling the credential's
+// full cap instead of the metered actual) for any other slice shape.
+// On any marshal/unmarshal failure it logs a warning and returns options
+// unchanged, so the settle body still carries a value rather than erroring.
+func overrideOptionsAmount(options any, amount string, logger Logger) any {
+	buf, err := json.Marshal(options)
+	if err != nil {
+		logger.Warnf("overrideOptionsAmount: marshal options: %v; settling the credential cap, not the actual", err)
+		return options
 	}
-	accepts := reqs.Accepts
-	if len(accepts) == 0 {
-		return nil
+	var arr []map[string]any
+	if err := json.Unmarshal(buf, &arr); err != nil {
+		logger.Warnf("overrideOptionsAmount: options is not an array of objects: %v; settling the credential cap, not the actual", err)
+		return options
 	}
-	acceptedNetwork := ""
-	if obj, ok := payload.(map[string]any); ok {
-		if acc, ok := obj["accepted"].(map[string]any); ok {
-			if n, ok := acc["network"].(string); ok {
-				acceptedNetwork = n
-			}
-		}
+	out := make([]any, len(arr))
+	for i, m := range arr {
+		m["amount"] = amount
+		out[i] = m
 	}
-	if acceptedNetwork != "" {
-		for _, a := range accepts {
-			if a.Network == acceptedNetwork {
-				return a
-			}
-		}
-		p.logger.Warnf("credential network %s not in accepts, using first accept", acceptedNetwork)
-		return accepts[0]
-	}
-	for _, a := range accepts {
-		if strings.HasPrefix(a.Network, "eip155") {
-			return a
-		}
-	}
-	p.logger.Warnf("no EVM accept found, using first accept")
-	return accepts[0]
+	return out
 }
 
 func addIf(m map[string]any, key, val string) {

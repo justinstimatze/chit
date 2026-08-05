@@ -33,6 +33,15 @@ type PaymentRequest struct {
 	// (idempotency). Optional.
 	PaymentRequestID string
 
+	// Session, when set, charges locally against the request-scoped payment
+	// session (opened from a detected retry credential via
+	// Merchant.OpenPaymentSession) instead of issuing a network /charge call.
+	// Multiple RequirePayment calls sharing a Session settle once, for the
+	// sum actually charged, when the caller closes it via
+	// Merchant.CloseSession. Optional — nil preserves the on-demand /charge
+	// behavior.
+	Session *PaymentSession
+
 	// Resource is the resource URL recorded in the challenge for activity labels.
 	// Optional.
 	Resource string
@@ -89,13 +98,24 @@ func (m *Merchant) RequirePayment(ctx context.Context, pr PaymentRequest) (*Chal
 		PaymentRequestID:     pr.PaymentRequestID,
 	}
 
-	charged, err := m.paymentServer.Charge(ctx, charge)
-	if err != nil {
-		return nil, err // fail closed: an errored charge is not a paid charge
-	}
-	if charged {
-		m.logger.Infof("charged %s for source %s", paymentAmount.String(), pr.User)
-		return nil, nil
+	// Prefer a request-scoped session: charge locally and let the caller
+	// settle once (for the sum actually charged) when it closes the session.
+	// Without one, fall back to the on-demand network /charge — preserving
+	// the original per-call behavior for callers that don't use sessions.
+	if pr.Session != nil {
+		if pr.Session.Charge(paymentAmount) {
+			m.logger.Infof("charged %s to session for source %s", paymentAmount.String(), pr.User)
+			return nil, nil
+		}
+	} else {
+		charged, err := m.paymentServer.Charge(ctx, charge)
+		if err != nil {
+			return nil, err // fail closed: an errored charge is not a paid charge
+		}
+		if charged {
+			m.logger.Infof("charged %s for source %s", paymentAmount.String(), pr.User)
+			return nil, nil
+		}
 	}
 
 	// Idempotency: reuse an in-flight payment if the caller knows of one.
@@ -106,7 +126,7 @@ func (m *Merchant) RequirePayment(ctx context.Context, pr PaymentRequest) (*Chal
 		}
 		if existingID != "" {
 			sources := m.fetchAllSources(ctx, destNetwork, destAddress)
-			return m.buildOmniError(existingID, paymentAmount, sources, pr)
+			return m.buildOmniError(ctx, existingID, paymentAmount, sources, pr)
 		}
 	}
 
@@ -131,7 +151,7 @@ func (m *Merchant) RequirePayment(ctx context.Context, pr PaymentRequest) (*Chal
 		return nil, err
 	}
 	m.logger.Infof("created payment request %s", paymentID)
-	return m.buildOmniError(paymentID, paymentAmount, sources, pr)
+	return m.buildOmniError(ctx, paymentID, paymentAmount, sources, pr)
 }
 
 // fetchAllSources combines the primary ATXP destination address with any
@@ -150,8 +170,25 @@ func (m *Merchant) fetchAllSources(ctx context.Context, destNetwork, destAddress
 
 // buildOmniError assembles the omni-challenge and injects the signed opaque
 // identity into each MPP challenge. Ported from requirePayment.ts buildOmniError.
-func (m *Merchant) buildOmniError(paymentID string, amount Amount, sources []Source, pr PaymentRequest) (*Challenge, error) {
-	payment := buildPaymentOptions(amount, sources, pr.Resource, "", paymentID, m.now())
+func (m *Merchant) buildOmniError(ctx context.Context, paymentID string, amount Amount, sources []Source, pr PaymentRequest) (*Challenge, error) {
+	// Fetch (TTL-cached) the protocol "supported" params so the challenge can
+	// advertise the metered variants: x402 upto (facilitator address) and MPP
+	// session (Tempo/Solana channel settler). On failure each returns
+	// empty/nil and only the base variant (x402 exact / MPP charge) is
+	// advertised.
+	facilitatorAddresses := fetchUptoFacilitatorAddresses(ctx, m.authServer, m.httpc, m.logger)
+	mppSupported := fetchMppSupported(ctx, m.authServer, m.httpc, m.logger)
+
+	payment := buildPaymentOptions(buildPaymentOptionsArgs{
+		Amount:               amount,
+		Sources:              sources,
+		Resource:             pr.Resource,
+		ChallengeID:          paymentID,
+		Now:                  m.now(),
+		FacilitatorAddresses: facilitatorAddresses,
+		MppSession:           mppSupported.Tempo,
+		MppSolanaSession:     mppSupported.Solana,
+	})
 
 	if len(payment.x402.Accepts) == 0 && len(sources) > 0 {
 		m.logger.Warnf("no x402-compatible networks among %d sources; x402 clients will see no options", len(sources))

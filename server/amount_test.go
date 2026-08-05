@@ -73,3 +73,32 @@ func TestAmountFromMicrosClampsNegative(t *testing.T) {
 		t.Errorf("AmountFromMicros(-5) = %s, want 0", got.String())
 	}
 }
+
+func TestAmountFromMicroString(t *testing.T) {
+	a, err := AmountFromMicroString("10000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.String() != "0.01" {
+		t.Errorf("AmountFromMicroString(10000).String() = %s, want 0.01", a.String())
+	}
+	for _, bad := range []string{"-1", "0.01", "abc", ""} {
+		if _, err := AmountFromMicroString(bad); err == nil {
+			t.Errorf("AmountFromMicroString(%q) = nil error, want rejection", bad)
+		}
+	}
+}
+
+func TestAmountAddAndMin(t *testing.T) {
+	a, _ := ParseAmount("0.01")
+	b, _ := ParseAmount("0.02")
+	if got := a.Add(b).String(); got != "0.03" {
+		t.Errorf("0.01 + 0.02 = %s, want 0.03", got)
+	}
+	if got := Min(a, b).String(); got != "0.01" {
+		t.Errorf("Min(0.01,0.02) = %s, want 0.01", got)
+	}
+	if got := Min(b, a).String(); got != "0.01" {
+		t.Errorf("Min(0.02,0.01) = %s, want 0.01", got)
+	}
+}

@@ -44,7 +44,7 @@ func TestBuildX402EVMAndSVM(t *testing.T) {
 		{Network: "base", Currency: "USDC", Address: "0xabcDEF0000000000000000000000000000000001", Amount: amt},
 		{Network: "solana", Currency: "USDC", Address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Amount: amt},
 	}
-	req := buildX402Requirements(opts, "https://merchant.example/mcp", "Acme")
+	req := buildX402Requirements(opts, "https://merchant.example/mcp", "Acme", nil)
 	if req.X402Version != 2 {
 		t.Errorf("x402Version = %d, want 2", req.X402Version)
 	}
@@ -87,7 +87,7 @@ func TestBuildX402FiltersInvalidAddresses(t *testing.T) {
 		{Network: "solana", Address: "0xnope", Amount: amt},
 		{Network: "atxp", Address: "uuid-here", Amount: amt}, // non-x402 network
 	}
-	req := buildX402Requirements(opts, "r", "p")
+	req := buildX402Requirements(opts, "r", "p", nil)
 	if len(req.Accepts) != 0 {
 		t.Errorf("accepts len = %d, want 0 (all filtered)", len(req.Accepts))
 	}
@@ -99,7 +99,7 @@ func TestBuildMppSolanaAndTempo(t *testing.T) {
 		{Network: "solana", Address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Amount: amt},
 		{Network: "tempo", Currency: "USDC", Address: "0xTempoRecipient", Amount: amt},
 	}
-	mpp := buildMppChallenges("pay-1", opts, "https://merchant.example/mcp", fixedTime)
+	mpp := buildMppChallenges("pay-1", opts, "https://merchant.example/mcp", fixedTime, nil, nil)
 	if len(mpp) != 2 {
 		t.Fatalf("mpp len = %d, want 2", len(mpp))
 	}
@@ -127,7 +127,7 @@ func TestBuildMppSolanaAndTempo(t *testing.T) {
 func TestBuildMppNilWhenNoChains(t *testing.T) {
 	amt := mustAmount(t, "0.01")
 	opts := []chargeOption{{Network: "base", Address: "0xabc", Amount: amt}}
-	if mpp := buildMppChallenges("pay-1", opts, "", fixedTime); mpp != nil {
+	if mpp := buildMppChallenges("pay-1", opts, "", fixedTime, nil, nil); mpp != nil {
 		t.Errorf("expected nil mpp for base-only options, got %+v", mpp)
 	}
 }
@@ -135,7 +135,7 @@ func TestBuildMppNilWhenNoChains(t *testing.T) {
 func TestOmniChallengeMcpError(t *testing.T) {
 	amt := mustAmount(t, "0.02")
 	opts := []chargeOption{{Network: "base", Address: "0xabcDEF0000000000000000000000000000000001", Amount: amt}}
-	x402 := buildX402Requirements(opts, "r", "p")
+	x402 := buildX402Requirements(opts, "r", "p", nil)
 	ch, err := omniChallengeMcpError("https://auth.atxp.ai", "pay-xyz", &amt, x402, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -152,6 +152,88 @@ func TestOmniChallengeMcpError(t *testing.T) {
 	// Data must be JSON-serializable for emission as a JSON-RPC error.
 	if _, err := json.Marshal(ch.Data); err != nil {
 		t.Fatalf("challenge data not serializable: %v", err)
+	}
+}
+
+func TestBuildX402UptoAdvertisedWithFacilitatorAddress(t *testing.T) {
+	amt := mustAmount(t, "0.01")
+	opts := []chargeOption{
+		{Network: "base", Currency: "USDC", Address: "0xabcDEF0000000000000000000000000000000001", Amount: amt},
+	}
+	facilitators := map[string]string{"eip155:8453": "0x7720030000000000000000000000000000000000"}
+
+	req := buildX402Requirements(opts, "r", "p", facilitators)
+	if len(req.Accepts) != 2 {
+		t.Fatalf("accepts len = %d, want 2 (exact + upto)", len(req.Accepts))
+	}
+	if req.Accepts[0].Scheme != "exact" {
+		t.Errorf("accepts[0].scheme = %q, want exact", req.Accepts[0].Scheme)
+	}
+	upto := req.Accepts[1]
+	if upto.Scheme != "upto" || upto.Network != "eip155:8453" {
+		t.Errorf("accepts[1] = %+v, want upto/eip155:8453", upto)
+	}
+	if fa, _ := upto.Extra["facilitatorAddress"].(string); fa != facilitators["eip155:8453"] {
+		t.Errorf("upto facilitatorAddress = %q", fa)
+	}
+}
+
+func TestBuildX402UptoOmittedWithoutFacilitatorAddress(t *testing.T) {
+	amt := mustAmount(t, "0.01")
+	opts := []chargeOption{{Network: "base", Address: "0xabcDEF0000000000000000000000000000000001", Amount: amt}}
+
+	req := buildX402Requirements(opts, "r", "p", nil)
+	if len(req.Accepts) != 1 || req.Accepts[0].Scheme != "exact" {
+		t.Errorf("accepts = %+v, want exact-only", req.Accepts)
+	}
+}
+
+func TestBuildX402DedupesBySchemeAndNetwork(t *testing.T) {
+	amt := mustAmount(t, "0.01")
+	// Same chain surfaced twice (two Base addresses) — keep only the first.
+	opts := []chargeOption{
+		{Network: "base", Address: "0xAddr1", Amount: amt},
+		{Network: "base", Address: "0xAddr2", Amount: amt},
+	}
+	req := buildX402Requirements(opts, "r", "p", nil)
+	if len(req.Accepts) != 1 || req.Accepts[0].PayTo != "0xAddr1" {
+		t.Errorf("accepts = %+v, want one entry (0xAddr1)", req.Accepts)
+	}
+}
+
+func TestBuildMppSessionChallenges(t *testing.T) {
+	amt := mustAmount(t, "0.01")
+	opts := []chargeOption{
+		{Network: "solana", Address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Amount: amt},
+		{Network: "tempo", Currency: "USDC", Address: "0xTempoRecipient", Amount: amt},
+	}
+	mpp := buildMppChallenges("pay-1", opts, "https://merchant.example/mcp", fixedTime,
+		&MppSessionSupport{EscrowContract: "0xescrow", AuthorizedSigner: "0xsigner", Operator: "0xop", ChainID: 42},
+		&SolanaMppSessionSupport{AuthorizedSigner: "solSigner"},
+	)
+	// solana charge, solana session, tempo charge, tempo session.
+	if len(mpp) != 4 {
+		t.Fatalf("mpp len = %d, want 4, got %+v", len(mpp), mpp)
+	}
+	solCharge, solSession, tempoCharge, tempoSessionCh := mpp[0], mpp[1], mpp[2], mpp[3]
+
+	if solCharge.Intent != "charge" || solSession.Intent != "session" {
+		t.Errorf("solana intents = %q/%q", solCharge.Intent, solSession.Intent)
+	}
+	solDetails, _ := solSession.Request["methodDetails"].(map[string]any)
+	if got, _ := solDetails["authorizedSigner"].(string); got != "solSigner" {
+		t.Errorf("solana session authorizedSigner = %q", got)
+	}
+
+	if tempoCharge.Intent != "charge" || tempoSessionCh.Intent != "session" {
+		t.Errorf("tempo intents = %q/%q", tempoCharge.Intent, tempoSessionCh.Intent)
+	}
+	details, _ := tempoSessionCh.Request["methodDetails"].(map[string]any)
+	if details["escrowContract"] != "0xescrow" || details["authorizedSigner"] != "0xsigner" || details["operator"] != "0xop" {
+		t.Errorf("tempo session methodDetails = %+v", details)
+	}
+	if details["chainId"] != 42 {
+		t.Errorf("tempo session chainId = %v, want 42", details["chainId"])
 	}
 }
 

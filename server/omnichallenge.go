@@ -36,24 +36,44 @@ func usdcAsset(network, fallbackNet string) string {
 }
 
 // buildX402Requirements builds x402 payment requirements from charge options.
-// EVM (Base) options come first so a client with no chain preference uses the
-// first entry. Ported from omniChallenge.ts buildX402Requirements.
-func buildX402Requirements(options []chargeOption, resource, payeeName string) X402PaymentRequirements {
+//
+// Each EVM (Base) network advertises BOTH schemes so any client can pay:
+//   - "exact": transfer the advertised amount (EIP-3009). Always advertised.
+//   - "upto": sign a Permit2 capped at the amount, meter locally, settle the
+//     actual ≤ cap via settlementOverrides.amount. Only advertised when a
+//     facilitatorAddress is known for that network (the only address allowed
+//     to settle the permit) — without one the accept would be unusable.
+//
+// SVM (Solana) stays "exact" only — Solana upto is not implemented upstream.
+// EVM options come first so a client with no chain preference uses the first
+// entry. Ported from omniChallenge.ts buildX402Requirements.
+func buildX402Requirements(options []chargeOption, resource, payeeName string, facilitatorAddresses map[string]string) X402PaymentRequirements {
 	accepts := []X402PaymentOption{}
 	for _, o := range options {
-		if x402EVMNetworks[o.Network] && strings.HasPrefix(o.Address, "0x") {
-			accepts = append(accepts, X402PaymentOption{
-				Scheme:            "exact",
-				Network:           caip2(o.Network),
-				Amount:            o.Amount.MicroString(),
-				Resource:          resource,
-				Description:       payeeName,
-				MimeType:          "application/json",
-				PayTo:             o.Address,
-				MaxTimeoutSeconds: 300,
-				Asset:             usdcAsset(o.Network, "base"),
-				Extra:             map[string]any{"name": "USD Coin", "version": "2"},
-			})
+		if !x402EVMNetworks[o.Network] || !strings.HasPrefix(o.Address, "0x") {
+			continue
+		}
+		network := caip2(o.Network)
+		base := X402PaymentOption{
+			Network:           network,
+			Amount:            o.Amount.MicroString(),
+			Resource:          resource,
+			Description:       payeeName,
+			MimeType:          "application/json",
+			PayTo:             o.Address,
+			MaxTimeoutSeconds: 300,
+			Asset:             usdcAsset(o.Network, "base"),
+		}
+		exact := base
+		exact.Scheme = "exact"
+		exact.Extra = map[string]any{"name": "USD Coin", "version": "2"}
+		accepts = append(accepts, exact)
+
+		if facilitatorAddress := facilitatorAddresses[network]; facilitatorAddress != "" {
+			upto := base
+			upto.Scheme = "upto"
+			upto.Extra = map[string]any{"name": "USD Coin", "version": "2", "facilitatorAddress": facilitatorAddress}
+			accepts = append(accepts, upto)
 		}
 	}
 	for _, o := range options {
@@ -76,16 +96,34 @@ func buildX402Requirements(options []chargeOption, resource, payeeName string) X
 			})
 		}
 	}
-	return X402PaymentRequirements{X402Version: 2, Accepts: accepts}
+
+	// Dedupe by (scheme, network): fetchAllSources can surface the same chain
+	// more than once (e.g. the destination's primary address plus a
+	// same-chain entry from Sources), which would otherwise advertise
+	// duplicate accepts. Keep the first per key.
+	seen := map[string]bool{}
+	deduped := make([]X402PaymentOption, 0, len(accepts))
+	for _, a := range accepts {
+		key := a.Scheme + ":" + a.Network
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		deduped = append(deduped, a)
+	}
+
+	return X402PaymentRequirements{X402Version: 2, Accepts: deduped}
 }
 
-// buildMppChallenges builds one MPP challenge per supported chain (Solana and/or
-// Tempo). Returns nil if no suitable option exists. Ported from omniChallenge.ts
+// buildMppChallenges builds one MPP challenge per supported chain (Solana
+// and/or Tempo), plus an additional `session`-intent challenge per chain when
+// the authorization server advertises session (channel) support. Returns nil
+// if no suitable option exists. Ported from omniChallenge.ts
 // buildMppChallenges, including the per-chain amount-encoding asymmetry.
 //
 // now is injected (rather than read from the clock inside) so the Tempo expiry
 // is testable and the function stays deterministic.
-func buildMppChallenges(id string, options []chargeOption, resource string, now time.Time) []MppChallengeData {
+func buildMppChallenges(id string, options []chargeOption, resource string, now time.Time, mppSession *MppSessionSupport, mppSolanaSession *SolanaMppSessionSupport) []MppChallengeData {
 	var challenges []MppChallengeData
 	var resField *resourceRef
 	if resource != "" {
@@ -122,6 +160,35 @@ func buildMppChallenges(id string, options []chargeOption, resource string, now 
 			Resource:  resField,
 			Request:   req,
 		})
+
+		// Solana `session`-intent challenge (payment-channels program) when auth
+		// advertises it. accounts opens the channel + uses its own
+		// operator/fee-payer; methodDetails carries only auth's Solana
+		// authorizedSigner. Same micro-units amount as the Solana charge.
+		if mppSolanaSession != nil {
+			sessionReq := map[string]any{
+				"amount":    micro,
+				"currency":  currency,
+				"recipient": sol.Address,
+				"methodDetails": map[string]any{
+					"authorizedSigner": mppSolanaSession.AuthorizedSigner,
+				},
+			}
+			if resField != nil {
+				sessionReq["resource"] = resField
+			}
+			challenges = append(challenges, MppChallengeData{
+				ID:        id,
+				Method:    "solana",
+				Intent:    "session",
+				Amount:    micro,
+				Currency:  currency,
+				Network:   network,
+				Recipient: sol.Address,
+				Resource:  resField,
+				Request:   sessionReq,
+			})
+		}
 	}
 
 	// Tempo: amount in human-readable form (e.g. "0.01"); mppx calls
@@ -153,6 +220,40 @@ func buildMppChallenges(id string, options []chargeOption, resource string, now 
 			Resource:  resField,
 			Request:   req,
 		})
+
+		// Also advertise a `session`-intent challenge (TIP-1034 channel) when
+		// auth exposes the settler params. accounts picks charge vs session;
+		// both carry the same per-request amount (the cap). The channel params
+		// (escrow, authorizedSigner, operator) ride in request.methodDetails so
+		// accounts can open/reuse the channel.
+		if mppSession != nil {
+			sessionReq := map[string]any{
+				"amount":    human,
+				"currency":  currency,
+				"recipient": tempo.Address,
+				"methodDetails": map[string]any{
+					"chainId":          mppSession.ChainID,
+					"escrowContract":   mppSession.EscrowContract,
+					"authorizedSigner": mppSession.AuthorizedSigner,
+					"operator":         mppSession.Operator,
+				},
+			}
+			if resField != nil {
+				sessionReq["resource"] = resField
+			}
+			challenges = append(challenges, MppChallengeData{
+				ID:        id,
+				Method:    "tempo",
+				Intent:    "session",
+				Amount:    human,
+				Currency:  currency,
+				Network:   tempo.Network,
+				Recipient: tempo.Address,
+				Expires:   now.Add(5 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+				Resource:  resField,
+				Request:   sessionReq,
+			})
+		}
 	}
 
 	if len(challenges) == 0 {
@@ -219,15 +320,39 @@ type paymentOptions struct {
 	options []chargeOption
 }
 
+// buildPaymentOptionsArgs bundles buildPaymentOptions' inputs. Ported from the
+// object-args shape of omniChallenge.ts buildPaymentOptions.
+type buildPaymentOptionsArgs struct {
+	Amount   Amount
+	Sources  []Source
+	Resource string
+
+	PayeeName   string
+	ChallengeID string // the payment request id
+
+	// Now seeds the Tempo challenge expiry (injected for determinism).
+	Now time.Time
+
+	// FacilitatorAddresses maps CAIP-2 network -> upto facilitator address
+	// (from GET /x402/supported). When absent for a network, only the exact
+	// x402 accept is advertised for it.
+	FacilitatorAddresses map[string]string
+	// MppSession is Tempo MPP session support (from GET /mpp/supported).
+	// When present, advertises the Tempo session intent alongside charge.
+	MppSession *MppSessionSupport
+	// MppSolanaSession is Solana MPP session support (from GET /mpp/supported).
+	// When present, advertises the Solana session intent alongside charge.
+	MppSolanaSession *SolanaMppSessionSupport
+}
+
 // buildPaymentOptions is the single source of truth for "given chain addresses +
 // amount, what do the protocol challenges look like?" Ported from
-// omniChallenge.ts buildPaymentOptions. challengeID must be provided (the
-// payment request id); now seeds the Tempo expiry.
-func buildPaymentOptions(amount Amount, sources []Source, resource, payeeName, challengeID string, now time.Time) paymentOptions {
-	options := sourcesToOptions(sources, amount, "USDC")
+// omniChallenge.ts buildPaymentOptions.
+func buildPaymentOptions(args buildPaymentOptionsArgs) paymentOptions {
+	options := sourcesToOptions(args.Sources, args.Amount, "USDC")
 	return paymentOptions{
-		x402:    buildX402Requirements(options, resource, payeeName),
-		mpp:     buildMppChallenges(challengeID, options, resource, now),
+		x402:    buildX402Requirements(options, args.Resource, args.PayeeName, args.FacilitatorAddresses),
+		mpp:     buildMppChallenges(args.ChallengeID, options, args.Resource, args.Now, args.MppSession, args.MppSolanaSession),
 		options: options,
 	}
 }

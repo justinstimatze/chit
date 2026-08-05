@@ -67,6 +67,18 @@ func AmountFromMicros(micros int64) Amount {
 	return Amount{micros: big.NewInt(micros)}
 }
 
+// AmountFromMicroString parses an atomic micro-unit integer string (e.g. the
+// x402/Solana-MPP on-chain amount, "10000") into an Amount. Unlike ParseAmount
+// (which takes a human-readable decimal), this expects no decimal point.
+func AmountFromMicroString(s string) (Amount, error) {
+	s = strings.TrimSpace(s)
+	i, ok := new(big.Int).SetString(s, 10)
+	if !ok || i.Sign() < 0 {
+		return Amount{}, fmt.Errorf("amount: %q is not a valid non-negative integer micro-unit count", s)
+	}
+	return Amount{micros: i}, nil
+}
+
 // value returns the underlying micro count, treating the zero Amount{} (nil
 // micros) as 0 so an uninitialized Amount is usable.
 func (a Amount) value() *big.Int {
@@ -91,6 +103,19 @@ func Max(a, b Amount) Amount {
 		return a
 	}
 	return b
+}
+
+// Min returns whichever of a, b is smaller.
+func Min(a, b Amount) Amount {
+	if a.GreaterThan(b) {
+		return b
+	}
+	return a
+}
+
+// Add returns a + b.
+func (a Amount) Add(b Amount) Amount {
+	return Amount{micros: new(big.Int).Add(a.value(), b.value())}
 }
 
 // MicroString renders the amount as its integer micro-unit count, e.g.

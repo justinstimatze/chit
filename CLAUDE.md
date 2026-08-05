@@ -24,40 +24,47 @@ the root package is `atxp` so callers write `atxp.New(...)`.
   `live_test.go`). Connects to paid ATXP MCP servers; handles OAuth (discovery, dynamic
   client registration, PKCE, the ATXP `/sign` + `redirect=false` authorization trick) and
   per-call payment (omni-challenge → `/authorize/auto` → header retry) transparently.
-- **Server / merchant (NOT built — this is the task):** `server/` is an empty stub.
-  Goal: let a Go MCP server charge its callers over ATXP (alongside any existing rails),
-  by emitting omni-challenges and verifying/settling payments.
+- **Server / merchant (done):** `server/` package. `RequirePayment` gates a metered call
+  (on-demand `/charge`, falling back to an omni-challenge); `CheckToken`/`CheckRequest`
+  authenticate callers (RFC 7662 introspection); `Verify`/`Settle` finalize a push-payment
+  retry credential. Also ported from later upstream commits: the x402 `upto` scheme and MPP
+  Tempo/Solana `session`-intent challenges (advertised when the auth server supports them),
+  and an explicit `PaymentSession` (`Merchant.OpenPaymentSession`/`CloseSession`) so several
+  `RequirePayment` calls sharing one retry credential can charge locally and settle once, for
+  the metered actual rather than the credential's full cap — the Go equivalent of upstream's
+  Express-middleware session-close settlement, since chit has no middleware layer to open/close
+  it implicitly.
 
-## The task: port the merchant side
+## Keeping in sync with upstream
 
-Read `docs/PLAN.md` first — it has the TS→Go package map and build order. `docs/PROTOCOL.md`
-has the wire protocol (OAuth + payment flow, endpoint table). Key finding: the merchant side
-is **also crypto-free** — `ATXPPaymentServer` delegates `/charge`, `/payment-request`,
-`/balance` to ATXP over HTTP; the only local crypto is an HMAC (`opaqueIdentity`).
-
-The authoritative reference is the TS source. It is NOT vendored here. Re-clone it:
+chit tracks `atxp-dev/sdk` (TS) by re-reading it periodically, not via a dependency pin — it
+is not vendored. To check for drift:
 
 ```
-git clone --depth 1 https://github.com/atxp-dev/sdk /tmp/atxp-sdk
+git clone --depth 50 https://github.com/atxp-dev/sdk /tmp/atxp-sdk-check
+cd /tmp/atxp-sdk-check && git log --oneline -20 -- packages/atxp-server/src packages/atxp-client/src
 ```
 
-Then read, in `packages/atxp-server/src/`: `requirePayment.ts`, `omniChallenge.ts`,
-`paymentServer.ts`, `opaqueIdentity.ts`, `protocol.ts`, and `core/oauth.ts` + `token.ts`
-for the resource-server (token-introspection) side. Port faithfully — reinventing payment
-verification is how you accidentally give service away free.
+Read new commits' diffs directly (`git show <sha>`) rather than trusting commit-message
+summaries alone — the wire contract details (which field is atomic vs decimal, which scheme
+gates which override) live in the diff, not the message. Skip anything under `atxp-base`/
+`atxp-x402` self-custody signer paths — chit's client only implements the hosted `ATXPAccount`
+path (see `docs/PROTOCOL.md`'s Scope decision), so self-custody-only changes don't apply.
 
-Suggested build order (also in PLAN.md): `paymentserver.go` (HTTP client) → `opaqueidentity.go`
-(HMAC) → `omnichallenge.go` (data assembly; port the USDC-address / CAIP2 / decimals tables
-verbatim) → `requirepayment.go` (the gate) → resource-server OAuth/token introspection. Add
-httptest unit tests per file and a `serverlive`-tagged test that issues a real challenge and
-settles a real payment (needs a funded account).
+Port order for a new merchant-side feature: `packages/atxp-server/src/omniChallenge.ts` (data
+assembly) → `protocol.ts` (settle-body / detection changes) → `paymentSession.ts` (if it's a
+metering change) → `requirePayment.ts` (wiring). Match `server/omnichallenge.go` →
+`server/protocol.go` → `server/paymentsession.go` → `server/requirepayment.go` respectively.
+Port faithfully — reinventing payment verification is how you accidentally give service away
+free.
 
 ## Build & test
 
 ```
 go build ./...
-go test ./...                                 # unit, no network
-go test -tags atxplive -run TestLive ./...    # live; needs funded ATXP_CONNECTION
+go test ./...                                    # unit, no network
+go test -tags atxplive -run TestLive ./...       # client live; needs funded ATXP_CONNECTION
+go test -tags serverlive -run TestLive ./server/... # merchant live; needs funded ATXP_CONNECTION
 ```
 
 A freshly `npx atxp@latest agent register`-ed account is an **orphan**, unfunded, and

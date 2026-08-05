@@ -149,6 +149,79 @@ func parseCredentialJSON(credential string) map[string]any {
 	return nil
 }
 
+// isMppSessionCredential reports whether an MPP credential is a TIP-1034
+// *session* (an on-chain payment channel opened at authorize) rather than a
+// one-shot "charge". The authoritative signal is challenge.intent=="session";
+// a channel descriptor on the payload is a structural backstop. Shared by the
+// settle-body builder and PaymentSession so both classify a credential
+// identically. Ported from protocol.ts isMppSessionCredential.
+func isMppSessionCredential(credential string) bool {
+	parsed := parseCredentialJSON(credential)
+	if parsed == nil {
+		return false
+	}
+	if challenge, ok := parsed["challenge"].(map[string]any); ok {
+		if intent, _ := challenge["intent"].(string); intent == "session" {
+			return true
+		}
+	}
+	if payload, ok := parsed["payload"].(map[string]any); ok {
+		if _, ok := payload["descriptor"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// selectX402Accept picks the single accept matching the credential's chain
+// (and, when advertised, scheme) from a full X402PaymentRequirements. logger
+// may be nil (deriveSessionCap has no settlement-bound logger). Ported from
+// the x402 branch of protocol.ts ProtocolSettlement.buildRequestBody.
+func selectX402Accept(payload map[string]any, reqs *X402PaymentRequirements, logger Logger) *X402PaymentOption {
+	if reqs == nil || len(reqs.Accepts) == 0 {
+		return nil
+	}
+	accepts := reqs.Accepts
+
+	var acceptedNetwork, acceptedScheme string
+	if acc, ok := payload["accepted"].(map[string]any); ok {
+		acceptedNetwork, _ = acc["network"].(string)
+		acceptedScheme, _ = acc["scheme"].(string)
+	}
+
+	if acceptedNetwork != "" {
+		// Match network AND scheme first: a network can advertise both
+		// 'exact' and 'upto', so a network-only match could return the wrong
+		// scheme and (for settle) drop the up-to override.
+		for _, a := range accepts {
+			if a.Network == acceptedNetwork && (acceptedScheme == "" || a.Scheme == acceptedScheme) {
+				return &a
+			}
+		}
+		for _, a := range accepts {
+			if a.Network == acceptedNetwork {
+				return &a
+			}
+		}
+		if logger != nil {
+			logger.Warnf("credential network %s not in accepts, using first accept", acceptedNetwork)
+		}
+		return &accepts[0]
+	}
+
+	// No `accepted` on the payload (raw/older credential formats): fall back
+	// to the first EVM accept.
+	for _, a := range accepts {
+		if strings.HasPrefix(a.Network, "eip155") {
+			return &a
+		}
+	}
+	if logger != nil {
+		logger.Warnf("no EVM accept found, using first accept")
+	}
+	return &accepts[0]
+}
+
 // extractNetworkFromAccountID splits a fully-qualified account id "network:address"
 // and returns the network. Ported from @atxp/common extractNetworkFromAccountId.
 func extractNetworkFromAccountID(accountID string) (string, error) {
