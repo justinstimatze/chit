@@ -93,7 +93,7 @@ func (p *ProtocolSettlement) Verify(ctx context.Context, protocol Protocol, cred
 		return VerifyResult{}, err
 	}
 	if status < 200 || status >= 300 {
-		p.logger.Warnf("verify %s failed with status %d", protocol, status)
+		p.logger.Warnf("verify %s failed with status %d body=%s", protocol, status, string(respBody))
 		return VerifyResult{Valid: false}, nil
 	}
 	var out VerifyResult
@@ -119,7 +119,7 @@ func (p *ProtocolSettlement) Settle(ctx context.Context, protocol Protocol, cred
 		return SettleResult{}, err
 	}
 	if status < 200 || status >= 300 {
-		p.logger.Errorf("settle %s failed with status %d", protocol, status)
+		p.logger.Errorf("settle %s failed with status %d body=%s", protocol, status, string(respBody))
 		return SettleResult{}, fmt.Errorf("atxp server: settlement failed for %s: status %d", protocol, status)
 	}
 	var out SettleResult

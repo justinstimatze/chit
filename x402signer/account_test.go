@@ -96,32 +96,47 @@ func TestAuthorizeCredentialShape(t *testing.T) {
 		t.Fatalf("credential is not base64-std: %v", err)
 	}
 	var cred struct {
-		Accepted struct {
+		X402Version int `json:"x402Version"`
+		Accepted    struct {
 			Network string `json:"network"`
 			Scheme  string `json:"scheme"`
+			Asset   string `json:"asset"`
+			Amount  string `json:"amount"`
+			PayTo   string `json:"payTo"`
 		} `json:"accepted"`
-		Signature     string `json:"signature"`
-		Authorization struct {
-			From, To, Value, ValidAfter, ValidBefore, Nonce string
-		} `json:"authorization"`
+		Payload struct {
+			Signature     string `json:"signature"`
+			Authorization struct {
+				From, To, Value, ValidAfter, ValidBefore, Nonce string
+			} `json:"authorization"`
+		} `json:"payload"`
 	}
 	if err := json.Unmarshal(decoded, &cred); err != nil {
 		t.Fatalf("credential is not valid JSON: %v\nbody: %s", err, decoded)
 	}
-	if cred.Accepted.Network != "eip155:8453" || cred.Accepted.Scheme != "exact" {
+	if cred.X402Version != 2 {
+		t.Errorf("x402Version = %d, want 2", cred.X402Version)
+	}
+	// accepted must carry the FULL matching PaymentRequirements (per the real
+	// x402 v2 spec's PaymentPayload), not just {network, scheme} — a facilitator
+	// needs the asset/amount/payTo terms to verify the signature against.
+	if cred.Accepted.Network != "eip155:8453" || cred.Accepted.Scheme != "exact" ||
+		cred.Accepted.Asset != "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" ||
+		cred.Accepted.Amount != "10000" ||
+		cred.Accepted.PayTo != "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" {
 		t.Errorf("accepted = %+v", cred.Accepted)
 	}
-	if !strings.HasPrefix(cred.Signature, "0x") || len(cred.Signature) != 2+130 {
-		t.Errorf("signature = %q, want 0x-prefixed 65-byte hex", cred.Signature)
+	if !strings.HasPrefix(cred.Payload.Signature, "0x") || len(cred.Payload.Signature) != 2+130 {
+		t.Errorf("signature = %q, want 0x-prefixed 65-byte hex", cred.Payload.Signature)
 	}
-	if cred.Authorization.From != acct.Address() {
-		t.Errorf("authorization.from = %q, want %q", cred.Authorization.From, acct.Address())
+	if cred.Payload.Authorization.From != acct.Address() {
+		t.Errorf("authorization.from = %q, want %q", cred.Payload.Authorization.From, acct.Address())
 	}
-	if cred.Authorization.To != "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" {
-		t.Errorf("authorization.to = %q", cred.Authorization.To)
+	if cred.Payload.Authorization.To != "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" {
+		t.Errorf("authorization.to = %q", cred.Payload.Authorization.To)
 	}
-	if cred.Authorization.Value != "10000" {
-		t.Errorf("authorization.value = %q, want 10000 (atomic, unscaled)", cred.Authorization.Value)
+	if cred.Payload.Authorization.Value != "10000" {
+		t.Errorf("authorization.value = %q, want 10000 (atomic, unscaled)", cred.Payload.Authorization.Value)
 	}
 }
 

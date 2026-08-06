@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -119,6 +120,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("fetch account sources: %v", err)
 	}
+	// /me only reports the account's mainnet addresses; for live x402 testing
+	// against a testnet facilitator, mirror the "base" address under
+	// "base_sepolia" too — same EOA, valid on both, and this is the only way
+	// to get an eip155:84532 accept advertised at all.
+	for _, s := range sources {
+		if s.Chain == "base" {
+			sources = append(sources, server.Source{Chain: "base_sepolia", Address: s.Address})
+			break
+		}
+	}
 	log.Printf("merchant chain addresses: %+v", sources)
 
 	m, err := server.New(server.Config{
@@ -168,6 +179,15 @@ func main() {
 		ResourceMetadataURL: prmURL,
 	})
 
+	// A session's settle call needs the same X402PaymentRequirements that was
+	// advertised in the 402 challenge (asset/payTo/amount/domain) to build a
+	// valid settle body — chit has no exported way to rebuild it standalone,
+	// so this example caches the Challenge's typed X402 field by caller,
+	// keyed on the retry request that presents a credential.
+	var challengeMu sync.Mutex
+	lastChallenge := map[string]server.X402PaymentRequirements{}
+	lastPaymentID := map[string]string{}
+
 	paymentGate := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ti := auth.TokenInfoFromContext(r.Context())
@@ -182,7 +202,15 @@ func main() {
 			var session *server.PaymentSession
 			if detected := server.DetectProtocol(r.Header); detected != nil {
 				log.Printf("payment credential detected: protocol=%s", detected.Protocol)
-				session = m.OpenPaymentSession(*detected, server.SettlementContext{})
+				challengeMu.Lock()
+				reqs, haveReqs := lastChallenge[sub]
+				paymentID := lastPaymentID[sub]
+				challengeMu.Unlock()
+				sctx := server.SettlementContext{SourceAccountID: sub, DestinationAccountID: merchantID, PaymentRequestID: paymentID}
+				if haveReqs {
+					sctx.PaymentRequirements = &reqs
+				}
+				session = m.OpenPaymentSession(*detected, sctx)
 				pr.Session = session
 			}
 
@@ -194,6 +222,10 @@ func main() {
 			}
 			if ch != nil {
 				log.Printf("payment required, issuing challenge paymentRequestId=%v", ch.Data["paymentRequestId"])
+				challengeMu.Lock()
+				lastChallenge[sub] = ch.X402
+				lastPaymentID[sub] = fmt.Sprint(ch.Data["paymentRequestId"])
+				challengeMu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusPaymentRequired)
 				_ = json.NewEncoder(w).Encode(ch.Data)

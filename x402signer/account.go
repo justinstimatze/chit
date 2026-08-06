@@ -197,17 +197,31 @@ func (a *X402SignerAccount) Authorize(ctx context.Context, p atxp.AuthorizeParam
 	if err != nil {
 		return atxp.AuthorizeResult{}, err
 	}
-
+	// Wire shape is the standard x402 v2 PaymentPayload: x402Version, payload
+	// (scheme-specific signature data), and accepted (the FULL matching
+	// PaymentRequirements, not just {network,scheme}, per coinbase/x402's
+	// go/types/v2.go PaymentPayload struct).
 	credential := map[string]any{
-		"accepted":  map[string]any{"network": accept.Network, "scheme": accept.Scheme},
-		"signature": "0x" + hex.EncodeToString(sig),
-		"authorization": map[string]any{
-			"from":        auth.From,
-			"to":          auth.To,
-			"value":       auth.Value.String(),
-			"validAfter":  auth.ValidAfter.String(),
-			"validBefore": auth.ValidBefore.String(),
-			"nonce":       "0x" + hex.EncodeToString(auth.Nonce[:]),
+		"x402Version": reqs.X402Version,
+		"accepted": map[string]any{
+			"scheme":            accept.Scheme,
+			"network":           accept.Network,
+			"asset":             accept.Asset,
+			"amount":            accept.Amount,
+			"payTo":             accept.PayTo,
+			"maxTimeoutSeconds": accept.MaxTimeoutSeconds,
+			"extra":             accept.Extra,
+		},
+		"payload": map[string]any{
+			"signature": "0x" + hex.EncodeToString(sig),
+			"authorization": map[string]any{
+				"from":        auth.From,
+				"to":          auth.To,
+				"value":       auth.Value.String(),
+				"validAfter":  auth.ValidAfter.String(),
+				"validBefore": auth.ValidBefore.String(),
+				"nonce":       "0x" + hex.EncodeToString(auth.Nonce[:]),
+			},
 		},
 	}
 	buf, err := json.Marshal(credential)
