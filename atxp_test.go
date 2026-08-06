@@ -116,6 +116,24 @@ func TestMemoryStoreParentPathWalk(t *testing.T) {
 	}
 }
 
+// Regression: a token saved for the bare origin (no path — what authenticate()
+// does when the resource URL has no path component, e.g. after
+// normalizeResourceURL strips a trailing well-known suffix) must still resolve
+// for a request to a single-segment path on that origin, e.g. "/mcp". The
+// parent-path walk used to return the origin WITH a trailing slash at that
+// step, which never matched the no-trailing-slash key trimToPath saves under,
+// and the following iteration then saw path "/" and gave up one level early —
+// so a resource server whose endpoint lives at a path other than "/" (i.e.
+// almost any real one) could authenticate every single request and never
+// reuse the token.
+func TestMemoryStoreParentPathWalkToBareOrigin(t *testing.T) {
+	s := NewMemoryStore()
+	s.SaveAccessToken("u", "https://x.ai", AccessToken{AccessToken: "T"})
+	if tok, ok := s.GetAccessToken("u", "https://x.ai/mcp"); !ok || tok.AccessToken != "T" {
+		t.Errorf("single-segment path should resolve to a token saved at the bare origin: %v %v", tok, ok)
+	}
+}
+
 func TestResourceFromWWWAuthenticate(t *testing.T) {
 	h := `Bearer resource_metadata="https://search.mcp.atxp.ai/.well-known/oauth-protected-resource/"`
 	got := resourceFromWWWAuthenticate(h)

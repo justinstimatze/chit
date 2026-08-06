@@ -23,16 +23,18 @@ type Config struct {
 	CallbackURL string
 }
 
-// Client connects to ATXP MCP tool servers as a hosted account, transparently
-// handling OAuth and per-call payments.
+// Client connects to ATXP MCP tool servers, transparently handling OAuth and
+// per-call payments. account is the Account interface, not the concrete
+// hosted ATXPAccount, so NewWithAccount can hand in a different backend (e.g.
+// a self-custodial x402 signer) while reusing this same transport/OAuth glue.
 type Client struct {
-	account *ATXPAccount
+	account Account
 	store   Store
 	httpc   *http.Client
 	cbURL   string
 }
 
-// New builds a Client from a Config.
+// New builds a Client backed by a hosted ATXPAccount from a connection string.
 func New(cfg Config) (*Client, error) {
 	hc := cfg.HTTPClient
 	if hc == nil {
@@ -42,6 +44,22 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newClientWithAccount(cfg, acct, hc)
+}
+
+// NewWithAccount builds a Client backed by any Account implementation (e.g. a
+// self-custodial signer from a subpackage like x402signer) instead of the
+// hosted ATXPAccount. cfg.ConnectionString is ignored; the other Config
+// fields (HTTPClient, Store, CallbackURL) still apply.
+func NewWithAccount(cfg Config, account Account) (*Client, error) {
+	hc := cfg.HTTPClient
+	if hc == nil {
+		hc = &http.Client{Timeout: 65 * time.Second}
+	}
+	return newClientWithAccount(cfg, account, hc)
+}
+
+func newClientWithAccount(cfg Config, account Account, hc *http.Client) (*Client, error) {
 	store := cfg.Store
 	if store == nil {
 		store = NewMemoryStore()
@@ -50,7 +68,7 @@ func New(cfg Config) (*Client, error) {
 	if cb == "" {
 		cb = "http://localhost:3000/unused-dummy-atxp-callback"
 	}
-	return &Client{account: acct, store: store, httpc: hc, cbURL: cb}, nil
+	return &Client{account: account, store: store, httpc: hc, cbURL: cb}, nil
 }
 
 // HTTPClient returns an *http.Client whose transport performs the ATXP OAuth +

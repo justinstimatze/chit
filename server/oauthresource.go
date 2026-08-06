@@ -81,8 +81,24 @@ type resourceClient struct {
 	allowHTTP       bool
 	logger          Logger
 
-	mu   sync.Mutex
-	meta map[string]authServerMeta // authServer base URL -> discovered metadata
+	mu      sync.Mutex
+	meta    map[string]authServerMeta    // authServer base URL -> discovered metadata
+	credReg map[string]*credRegistration // issuer -> in-flight/just-finished DCR call
+}
+
+// credRegistration coordinates concurrent clientCredentials callers for the
+// same issuer so only one dynamic-client-registration HTTP call is ever in
+// flight at a time. Without this, concurrent callers (e.g. several inbound
+// requests hitting the merchant before its first credentials are cached)
+// each independently call POST /register; some auth servers reject a second
+// near-simultaneous registration for the same connection token with 409,
+// and that caller's error propagated even though a sibling call's
+// registration succeeded moments earlier — a real, observed failure mode,
+// not hypothetical.
+type credRegistration struct {
+	done chan struct{}
+	cc   atxp.ClientCredentials
+	err  error
 }
 
 func newResourceClient(store atxp.Store, hc *http.Client, connectionToken, clientName string, allowHTTP bool, logger Logger) *resourceClient {
@@ -94,6 +110,7 @@ func newResourceClient(store atxp.Store, hc *http.Client, connectionToken, clien
 		allowHTTP:       allowHTTP,
 		logger:          logger,
 		meta:            map[string]authServerMeta{},
+		credReg:         map[string]*credRegistration{},
 	}
 }
 
@@ -134,7 +151,9 @@ func (c *resourceClient) discover(ctx context.Context, authServer string) (authS
 }
 
 // clientCredentials returns the merchant's DCR credentials for an authorization
-// server, registering on first use. Implements credentialsSource.
+// server, registering on first use. Implements credentialsSource. Concurrent
+// callers for the same issuer share a single in-flight registration (see
+// credRegistration) rather than each independently racing POST /register.
 func (c *resourceClient) clientCredentials(ctx context.Context, authServer string) (clientID, clientSecret string, err error) {
 	m, err := c.discover(ctx, authServer)
 	if err != nil {
@@ -143,9 +162,30 @@ func (c *resourceClient) clientCredentials(ctx context.Context, authServer strin
 	if cc, ok := c.store.GetClientCredentials(m.Issuer); ok {
 		return cc.ClientID, cc.ClientSecret, nil
 	}
-	cc, err := c.registerClient(ctx, m)
-	if err != nil {
-		return "", "", err
+
+	c.mu.Lock()
+	if reg, ok := c.credReg[m.Issuer]; ok {
+		c.mu.Unlock()
+		<-reg.done
+		if reg.err != nil {
+			return "", "", reg.err
+		}
+		return reg.cc.ClientID, reg.cc.ClientSecret, nil
+	}
+	reg := &credRegistration{done: make(chan struct{})}
+	c.credReg[m.Issuer] = reg
+	c.mu.Unlock()
+
+	cc, regErr := c.registerClient(ctx, m)
+	reg.cc, reg.err = cc, regErr
+	close(reg.done)
+
+	c.mu.Lock()
+	delete(c.credReg, m.Issuer) // let a later, non-concurrent call retry if this one failed
+	c.mu.Unlock()
+
+	if regErr != nil {
+		return "", "", regErr
 	}
 	c.store.SaveClientCredentials(m.Issuer, cc)
 	return cc.ClientID, cc.ClientSecret, nil

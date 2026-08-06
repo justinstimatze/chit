@@ -34,6 +34,14 @@ the root package is `atxp` so callers write `atxp.New(...)`.
   the metered actual rather than the credential's full cap — the Go equivalent of upstream's
   Express-middleware session-close settlement, since chit has no middleware layer to open/close
   it implicitly.
+- **Self-custodial x402 signing (started 2026-08-05):** `x402signer/` — a new `atxp.Account`
+  implementation that pays an x402 "exact"-scheme challenge by signing an EIP-3009
+  `transferWithAuthorization` with a raw secp256k1 key (no RPC, no gas, no broadcast — it only
+  signs). New dependency: `github.com/ethereum/go-ethereum` (isolated to this subpackage so the
+  root package's dependency graph is unaffected). Built because the hosted/ATXP-native rail
+  turns out to be restricted to ATXP's own first-party services for real settlement — see
+  `docs/PROTOCOL.md`'s IOU-conversion notes; x402/MPP are the actual third-party-payment rails.
+  Scope: EVM "exact" only. Not done: `upto`/Permit2, Solana, MPP, any keystore/KMS.
 
 ## Keeping in sync with upstream
 

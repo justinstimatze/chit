@@ -99,6 +99,83 @@ func TestLiveIssuesRealChallenge(t *testing.T) {
 	t.Logf("live challenge issued: code=%d paymentRequestId=%s", ch.Code, prID)
 }
 
+// TestLiveOmniChallengeAdvertisesMeteredVariants confirms the merchant's
+// buildOmniError path picks up the metered protocol variants — x402 "upto"
+// (from GET /x402/supported) and MPP Tempo "session" (from GET
+// /mpp/supported) — from the real authorization server, added after chit's
+// initial merchant port. It moves no money: like TestLiveIssuesRealChallenge,
+// there is no SourceAccountToken, so the on-demand charge 402s and this only
+// issues (never pays) a challenge. The destination addresses are dummy
+// (never actually paid to) — they exist purely so buildX402Requirements /
+// buildMppChallenges have base/tempo options to attach the metered variant to.
+func TestLiveOmniChallengeAdvertisesMeteredVariants(t *testing.T) {
+	conn := liveConnection(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	acct, err := atxp.NewATXPAccount(conn, nil)
+	if err != nil {
+		t.Fatalf("NewATXPAccount: %v", err)
+	}
+	merchantID, err := acct.AccountID(ctx)
+	if err != nil {
+		var re *atxp.RestrictionError
+		if errors.As(err, &re) {
+			t.Skipf("account restricted (%s); use a funded account", re.Code)
+		}
+		t.Fatalf("resolve merchant account id: %v", err)
+	}
+
+	m, err := New(Config{
+		Destination: StaticDestination{
+			ID: merchantID,
+			Addresses: []Source{
+				{Chain: "base", Address: "0x000000000000000000000000000000DeaDBeef"},
+				{Chain: "tempo", Address: "0x000000000000000000000000000000DeaDBeef"},
+			},
+		},
+		ConnectionToken: connectionToken(t, conn),
+		PayeeName:       "chit serverlive metered-variant test",
+	})
+	if err != nil {
+		t.Fatalf("New merchant: %v", err)
+	}
+
+	ch, err := m.RequirePayment(ctx, PaymentRequest{
+		Price:    mustAmount(t, "0.01"),
+		User:     merchantID,
+		Resource: "https://chit.example/serverlive-metered",
+	})
+	if err != nil {
+		t.Fatalf("RequirePayment (live): %v", err)
+	}
+	if ch == nil {
+		t.Fatal("expected a payment challenge, got nil (charge settled unexpectedly)")
+	}
+
+	var uptoSeen bool
+	for _, a := range ch.X402.Accepts {
+		t.Logf("x402 accept: scheme=%s network=%s", a.Scheme, a.Network)
+		if a.Scheme == "upto" && a.Network == "eip155:8453" {
+			uptoSeen = true
+		}
+	}
+	if !uptoSeen {
+		t.Error("expected an upto/eip155:8453 x402 accept (auth.atxp.ai/x402/supported advertises a base facilitator address as of this writing)")
+	}
+
+	var tempoSessionSeen bool
+	for _, c := range ch.MPP {
+		t.Logf("mpp challenge: method=%s intent=%s", c.Method, c.Intent)
+		if c.Method == "tempo" && c.Intent == "session" {
+			tempoSessionSeen = true
+		}
+	}
+	if !tempoSessionSeen {
+		t.Error("expected a tempo session-intent MPP challenge (auth.atxp.ai/mpp/supported advertises a Tempo settler as of this writing)")
+	}
+}
+
 // TestLiveSettlesRealPayment exercises a real on-demand pull settlement: the
 // authorization server pulls a (tiny) amount from a funded payer account and
 // credits the merchant's destination account.

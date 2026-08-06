@@ -41,6 +41,52 @@ client is unverified anymore.
 Re-run live: `ATXP_CONNECTION=<funded-account-connection-string> go test -tags atxplive -run TestLivePaidPath ./internal/atxp/...`
 (or persist via `npx atxp login --token "..."`, which `live_test.go` reads from `~/.atxp/config`).
 
+**Pull-mode `/charge` gotcha — needs an established Connection, not just funds:**
+- An account's displayed balance (dashboard, `npx atxp balance`) is real and spendable, but
+  only through a full OAuth-authorized session with a specific resource — what happens
+  transparently when a client calls a first-party tool like `search`.
+- `server.RequirePayment`'s on-demand path (`SourceAccountToken` → `POST /charge`) only
+  succeeds if the payer has already connected to *that specific resource* — see
+  **Connections → Add MCP Server** on `accounts.atxp.ai`. Without a Connection, `/charge`
+  returns 402 with `shortage: <amount>` for any amount, regardless of real balance —
+  `GET /balance` on the same auth server independently confirms this by returning `0` for
+  an unconnected caller.
+- A Connection forms automatically and headlessly the first time a client pays a resource
+  (no dashboard step needed) — chit's client already does this. It requires the resource to
+  be a real, reachable HTTPS server (PRM discovery + DCR + `/authorize` all hit it over the
+  network); a placeholder/synthetic `Resource` string can never form one.
+
+**Reference merchant + how to live-test a Connection forming for real:**
+- `examples/paidmcp` is a real, runnable MCP server wrapping `server.Merchant` (a paid
+  `ping` tool, `$0.01`) and `examples/paidmcp/client` drives the payer side through chit's
+  client package — useful whenever you need an actual reachable resource to test against,
+  not just `server/live_test.go`'s in-process challenge checks.
+- To expose it publicly for a real OAuth handshake: `tailscale funnel <port>` (needs Funnel
+  enabled on the tailnet and `sudo tailscale set --operator=$USER` once, run interactively —
+  not through a non-TTY agent shell). Plain private Tailscale networking is NOT enough;
+  ATXP's cloud backend needs a real public URL.
+- `server.StaticDestination` needs real chain addresses in `Addresses` (from the merchant
+  account's own `GET /me` → `sources[]`), not just the bare `ID` — otherwise x402/MPP
+  options are silently empty (`no x402-compatible networks among N sources` in the log).
+
+**Bug found and fixed this way (2026-08-05):** `store.go`'s `GetAccessToken` parent-path
+walk had a trailing-slash mismatch — a token saved for a bare origin (`https://host`, what
+`authenticate()` saves under when the resource URL has no path) never matched a lookup for
+a single-segment request path (`https://host/mcp`), so the walk gave up one level short of
+the origin. This silently forced a full re-authentication on every single request instead of
+reusing the cached token. Invisible until now because the only resource ever live-tested
+(`search.mcp.atxp.ai`) happens to serve at the root path, hiding the mismatch by coincidence.
+Fixed in `store.go`; regression test `TestMemoryStoreParentPathWalkToBareOrigin` in
+`atxp_test.go`.
+
+**Current live wall (2026-08-05, not a chit issue):** with the above fixed, a Connection now
+forms correctly and a real 402 challenge is issued — but the actual settlement call fails at
+`auth.atxp.ai`'s `/authorize/auto` with `403 Destination not allowed for IOU conversion`.
+Unaffected by enabling "Enable MCP servers" on the merchant account's Servers page, or by
+attaching real chain addresses to the destination. Looks like a platform-side restriction on
+which accounts can receive converted funds (possibly compliance-related) — not something
+fixable via chit config. Worth asking ATXP support about directly with this exact error.
+
 ### Open decisions for the gemot session (architecture-dependent — not decided here)
 
 - Where `ATXP_CONNECTION` lives in gemot config (env / config file / secret store). It is
@@ -71,8 +117,15 @@ ATXP has **two account types** (`atxpFetcher.ts:238`):
   the ATXP accounts server. Only `ATXPAccountHandler` is used; the x402/MPP local payment
   makers are never instantiated. **This is what gemot builds.**
 - Self-custodial (Base/Solana wallet) — uses `@x402/evm`, EIP-712 signing,
-  `X402ProtocolHandler`/`MPPProtocolHandler`. **Out of scope.** Would add go-ethereum +
-  `coinbase/x402/go` and ~2–4 days. Skip unless gemot must hold its own keys.
+  `X402ProtocolHandler`/`MPPProtocolHandler`. **Partially built (2026-08-05):**
+  `x402signer/` implements EIP-3009 "exact"-scheme signing on EVM chains as an
+  `atxp.Account` — see its package doc comment for the full scope. Still out
+  of scope: the `upto`/Permit2 x402 scheme, Solana, and MPP entirely.
+  Rationale for building this despite the "hosted account only" default: the
+  hosted/ATXP-native rail turns out to be restricted to ATXP's own first-party
+  services for real settlement (see the pull-mode/IOU-conversion notes above)
+  — x402 (and MPP) are the actual open, direct-settlement rails third-party
+  payments go through.
 
 Confirmed: **no Go (or Python-native) ATXP SDK exists.** `atxp-dev` is ~17 repos, all
 TS/JS. The only native SDK is `@atxp/client` (npm). Python/other support is framework

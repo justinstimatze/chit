@@ -108,6 +108,15 @@ func (s *MemoryStore) GetAccessToken(userID, u string) (AccessToken, bool) {
 			return t, true
 		}
 		parent := parentPath(p)
+		if parent != "" {
+			// parentPath may return an origin with a trailing "/" (path "/");
+			// re-trim so it matches the no-trailing-slash form trimToPath saved
+			// the origin-level key under, or the walk stops one level short of
+			// the origin and a token saved for the bare origin never matches a
+			// single-segment request path (e.g. saved "https://x.ai", looked up
+			// "https://x.ai/mcp").
+			parent = trimToPath(parent)
+		}
 		if parent == "" || parent == p {
 			return AccessToken{}, false
 		}
