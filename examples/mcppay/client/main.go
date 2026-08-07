@@ -16,8 +16,8 @@
 //	    -tool account -arg action=buy_credits -arg pack=Starter
 //
 // Pass -challenge-only to stop after the first call and print the
-// payment_required result, without ever loading a key, signing, or paying —
-// useful for proving a merchant's challenge path (e.g. DCR registration)
+// payment_required result, without ever loading a key, signing, or paying.
+// Useful for proving a merchant's challenge path (e.g. DCR registration)
 // works without moving any money:
 //
 //	MCP_ENDPOINT=http://127.0.0.1:8080/mcp MCP_API_KEY=<bearer token> \

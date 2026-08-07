@@ -87,7 +87,7 @@ func main() {
 	lastPaymentID := map[string]string{}
 
 	http.HandleFunc("/pay", func(w http.ResponseWriter, r *http.Request) {
-		// User: merchantID is a placeholder — there is no OAuth-authenticated
+		// User: merchantID is a placeholder. There is no OAuth-authenticated
 		// caller for a genuine x402 stranger. This makes every first call a
 		// source==destination self-charge, which server/live_test.go's
 		// TestLiveSettlesRealPayment notes the AS "may treat ... specially":

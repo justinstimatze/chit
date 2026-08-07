@@ -51,7 +51,7 @@ type Config struct {
 
 	// PayeeName labels the merchant in challenges and metadata, and doubles as
 	// the dynamic-client-registration client_name sent to the authorization
-	// server. Defaults to "An ATXP Server" — set this to something distinctive
+	// server. Defaults to "An ATXP Server"; set this to something distinctive
 	// in production. The auth server treats client_name as claimed once
 	// registered; with the default Store (in-memory, lost on restart) a second
 	// process registering under the same unset-default name, whether a
