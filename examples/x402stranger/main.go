@@ -149,5 +149,8 @@ func main() {
 		log.Fatalf("listen: %v", err)
 	}
 	log.Printf("x402stranger merchant listening on %s", ln.Addr())
+	// Binds to 127.0.0.1 only, for local testing. A real deployment reachable
+	// by strangers needs a reverse proxy/tunnel terminating TLS in front of
+	// this, same as examples/paidmcp.
 	log.Fatal(http.Serve(ln, nil))
 }

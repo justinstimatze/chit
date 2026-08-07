@@ -249,5 +249,8 @@ func main() {
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	log.Printf("listening on %s, resource=%s", addr, resourceURL)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	// Binds to 127.0.0.1 only (see PUBLIC_URL usage comment above); a reverse
+	// proxy/tunnel (e.g. Tailscale Funnel) terminates TLS in front of this,
+	// this process never speaks directly to the public internet.
+	log.Fatal(http.ListenAndServe(addr, nil)) // nosemgrep: go.lang.security.audit.net.use-tls.use-tls
 }
