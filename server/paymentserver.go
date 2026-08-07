@@ -208,7 +208,7 @@ func (s *ATXPPaymentServer) makeRequest(ctx context.Context, path string, body a
 	if err != nil {
 		return 0, nil, fmt.Errorf("atxp server: POST %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, respBody, nil
 }

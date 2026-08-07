@@ -1,11 +1,10 @@
 // Package atxp is a client for paid ATXP MCP tools (web search, image/video/music
 // generation, etc.) using a hosted ATXP account (a connection string).
 //
-// gemot uses ATXP only as a paid-tool rail; LLM inference stays on the native
-// Anthropic SDK. The hosted-account model means this client performs no on-chain
-// crypto: every signing and settlement operation is an HTTP call to the ATXP
-// accounts server. See ATXP_GO_HANDOFF.md for the full protocol, with file:line
-// references into the reference TypeScript SDK (github.com/atxp-dev/sdk).
+// The hosted-account model means this client performs no on-chain crypto: every
+// signing and settlement operation is an HTTP call to the ATXP accounts server.
+// See docs/PROTOCOL.md for the full protocol, with file:line references into
+// the reference TypeScript SDK (github.com/atxp-dev/sdk).
 //
 // The shape mirrors the TS @atxp/client: an http.RoundTripper (transport.go)
 // wraps an MCP Streamable HTTP transport and transparently handles the two legs
@@ -300,7 +299,7 @@ func (a *ATXPAccount) do(req *http.Request, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))

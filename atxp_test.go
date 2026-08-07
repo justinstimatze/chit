@@ -46,27 +46,27 @@ func TestAccountEndpoints(t *testing.T) {
 				t.Errorf("/me auth = %q, want Bearer", r.Header.Get("Authorization"))
 			}
 			sawMe = true
-			json.NewEncoder(w).Encode(map[string]string{"accountId": "id42"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"accountId": "id42"})
 		case "/sign":
 			if !strings.HasPrefix(r.Header.Get("Authorization"), "Basic ") {
 				t.Errorf("/sign auth = %q, want Basic", r.Header.Get("Authorization"))
 			}
 			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body["codeChallenge"] != "chal" {
 				t.Errorf("/sign codeChallenge = %v", body["codeChallenge"])
 			}
 			sawSign = true
-			json.NewEncoder(w).Encode(map[string]string{"jwt": "signed.jwt"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"jwt": "signed.jwt"})
 		case "/authorize/auto":
 			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body["currency"] != "USDC" {
 				t.Errorf("/authorize currency = %v", body["currency"])
 			}
 			sawAuthorize = true
 			cred, _ := json.Marshal(map[string]string{"foo": "bar"})
-			json.NewEncoder(w).Encode(map[string]string{"protocol": "atxp", "credential": string(cred)})
+			_ = json.NewEncoder(w).Encode(map[string]string{"protocol": "atxp", "credential": string(cred)})
 		default:
 			http.Error(w, "nope", 404)
 		}
@@ -212,29 +212,29 @@ func TestFullFlow_OAuthThenPayment(t *testing.T) {
 	as = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server":
-			json.NewEncoder(w).Encode(authServer{
+			_ = json.NewEncoder(w).Encode(authServer{
 				Issuer:                as.URL,
 				AuthorizationEndpoint: as.URL + "/authorize",
 				TokenEndpoint:         as.URL + "/token",
 				RegistrationEndpoint:  as.URL + "/register",
 			})
 		case "/register":
-			json.NewEncoder(w).Encode(map[string]string{"client_id": "cid", "client_secret": "csec"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"client_id": "cid", "client_secret": "csec"})
 		case "/authorize":
 			if r.Header.Get("Authorization") != "Bearer signed.jwt" {
 				t.Errorf("authorize missing signed JWT: %q", r.Header.Get("Authorization"))
 			}
 			// redirect=false hack: 200 with {redirect: callback?code&state}
 			state := r.URL.Query().Get("state")
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"redirect": "http://cb/done?code=AUTHCODE&state=" + state,
 			})
 		case "/token":
-			r.ParseForm()
+			_ = r.ParseForm()
 			if r.Form.Get("code") != "AUTHCODE" || r.Form.Get("code_verifier") == "" {
 				t.Errorf("token req bad: %v", r.Form)
 			}
-			json.NewEncoder(w).Encode(map[string]any{"access_token": "ACCESS", "refresh_token": "R", "expires_in": 3600})
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "ACCESS", "refresh_token": "R", "expires_in": 3600})
 		default:
 			http.Error(w, "no", 404)
 		}
@@ -245,12 +245,12 @@ func TestFullFlow_OAuthThenPayment(t *testing.T) {
 	accounts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/spend-permission":
-			json.NewEncoder(w).Encode(map[string]string{"spendPermissionToken": "spt"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"spendPermissionToken": "spt"})
 		case "/sign":
-			json.NewEncoder(w).Encode(map[string]string{"jwt": "signed.jwt"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"jwt": "signed.jwt"})
 		case "/authorize/auto":
 			cred, _ := json.Marshal(map[string]string{"c": "1"})
-			json.NewEncoder(w).Encode(map[string]string{"protocol": "atxp", "credential": string(cred)})
+			_ = json.NewEncoder(w).Encode(map[string]string{"protocol": "atxp", "credential": string(cred)})
 		default:
 			http.Error(w, "no", 404)
 		}
@@ -262,7 +262,7 @@ func TestFullFlow_OAuthThenPayment(t *testing.T) {
 	authed, paid := false, false
 	mcp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-protected-resource" {
-			json.NewEncoder(w).Encode(map[string]any{"authorization_servers": []string{as.URL}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"authorization_servers": []string{as.URL}})
 			return
 		}
 		if !authed {
@@ -280,7 +280,7 @@ func TestFullFlow_OAuthThenPayment(t *testing.T) {
 				paid = true
 			} else {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{
+				_ = json.NewEncoder(w).Encode(map[string]any{
 					"jsonrpc": "2.0", "id": 1,
 					"error": map[string]any{"code": codePaymentRequiredOmni, "message": "pay",
 						"data": map[string]any{"chargeAmount": "0.01", "paymentRequestId": "pr1"}},
@@ -289,7 +289,7 @@ func TestFullFlow_OAuthThenPayment(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
 	}))
 	defer mcp.Close()
 
@@ -302,7 +302,7 @@ func TestFullFlow_OAuthThenPayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 || !strings.Contains(string(body), `"ok":true`) {
 		t.Fatalf("final response = %d %s", resp.StatusCode, body)

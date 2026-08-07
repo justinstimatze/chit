@@ -40,7 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Connect: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: "ping", Arguments: map[string]any{}})
 	if err != nil {

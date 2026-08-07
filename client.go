@@ -101,6 +101,6 @@ func (c *Client) Connect(ctx context.Context, serverURL string) (*mcp.ClientSess
 		Endpoint:   serverURL,
 		HTTPClient: c.HTTPClient(),
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "gemot", Version: "0.1.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "chit", Version: "0.1.0"}, nil)
 	return client.Connect(ctx, transport, nil)
 }

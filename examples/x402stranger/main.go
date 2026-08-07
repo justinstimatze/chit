@@ -78,13 +78,13 @@ func main() {
 
 	// A session's settle call needs the same X402PaymentRequirements that was
 	// advertised in the 402 challenge to build a valid settle body, chit has
-	// no exported way to rebuild it standalone. Every request shares the same
-	// price and destination, so a single cached value (not one per caller) is
-	// enough.
+	// no exported way to rebuild it standalone. There is no OAuth-derived
+	// caller id to key this by (that's the whole point of this example), so
+	// it's keyed by remote address instead, good enough to keep two
+	// concurrent strangers' challenges from clobbering each other.
 	var challengeMu sync.Mutex
-	var lastChallenge server.X402PaymentRequirements
-	var haveChallenge bool
-	var lastPaymentID string
+	lastChallenge := map[string]server.X402PaymentRequirements{}
+	lastPaymentID := map[string]string{}
 
 	http.HandleFunc("/pay", func(w http.ResponseWriter, r *http.Request) {
 		pr := server.PaymentRequest{Price: price, User: merchantID, Resource: resourceURL}
@@ -100,8 +100,8 @@ func main() {
 			}
 
 			challengeMu.Lock()
-			reqs, ok := lastChallenge, haveChallenge
-			paymentID := lastPaymentID
+			reqs, ok := lastChallenge[r.RemoteAddr]
+			paymentID := lastPaymentID[r.RemoteAddr]
 			challengeMu.Unlock()
 			sctx := server.SettlementContext{SourceAccountID: merchantID, DestinationAccountID: merchantID, PaymentRequestID: paymentID}
 			if ok {
@@ -120,8 +120,8 @@ func main() {
 		if ch != nil {
 			log.Printf("payment required, issuing challenge paymentRequestId=%v", ch.Data["paymentRequestId"])
 			challengeMu.Lock()
-			lastChallenge, haveChallenge = ch.X402, true
-			lastPaymentID = fmt.Sprint(ch.Data["paymentRequestId"])
+			lastChallenge[r.RemoteAddr] = ch.X402
+			lastPaymentID[r.RemoteAddr] = fmt.Sprint(ch.Data["paymentRequestId"])
 			challengeMu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusPaymentRequired)

@@ -34,14 +34,19 @@ the root package is `atxp` so callers write `atxp.New(...)`.
   the metered actual rather than the credential's full cap — the Go equivalent of upstream's
   Express-middleware session-close settlement, since chit has no middleware layer to open/close
   it implicitly.
-- **Self-custodial x402 signing (started 2026-08-05):** `x402signer/` — a new `atxp.Account`
+- **Self-custodial x402 signing (done, live-verified):** `x402signer/` — an `atxp.Account`
   implementation that pays an x402 "exact"-scheme challenge by signing an EIP-3009
   `transferWithAuthorization` with a raw secp256k1 key (no RPC, no gas, no broadcast — it only
   signs). New dependency: `github.com/ethereum/go-ethereum` (isolated to this subpackage so the
   root package's dependency graph is unaffected). Built because the hosted/ATXP-native rail
   turns out to be restricted to ATXP's own first-party services for real settlement — see
   `docs/PROTOCOL.md`'s IOU-conversion notes; x402/MPP are the actual third-party-payment rails.
-  Scope: EVM "exact" only. Not done: `upto`/Permit2, Solana, MPP, any keystore/KMS.
+  Real settlement confirmed on Base mainnet, verified via the on-chain `Transfer` event log
+  (see `docs/PROTOCOL.md`'s payment-modes table), including the true stranger-to-stranger case
+  with no ATXP account on the payer side at all (`examples/x402stranger`). `atxp.HybridAccount`
+  pairs an `ATXPAccount`'s OAuth identity with an `x402signer` account's payment signing, for
+  when a resource is gated behind an OAuth 401 rather than a bare 402. Scope: EVM "exact" only.
+  Not done: `upto`/Permit2, Solana, MPP, any keystore/KMS.
 
 ## Keeping in sync with upstream
 
@@ -75,6 +80,11 @@ go test -tags atxplive -run TestLive ./...       # client live; needs funded ATX
 go test -tags serverlive -run TestLive ./server/... # merchant live; needs funded ATXP_CONNECTION
 ```
 
+CI (`.github/workflows/ci.yml`) runs build/vet/gofmt/test/golangci-lint, plus
+`govulncheck`, `gitleaks`, and `semgrep` as separate jobs. Mirror the fast
+checks locally before pushing: `git config core.hooksPath scripts/githooks`
+once, then `scripts/githooks/pre-commit` runs on every commit.
+
 A freshly `npx atxp@latest agent register`-ed account is an **orphan**, unfunded, and
 `fraud_blocked` — it cannot `/sign` or pay. The web `/fund` page funds the email-login
 *owner* account, not the orphan. Use a funded account's connection string from the
@@ -82,6 +92,6 @@ dashboard **Servers** page (`funded: true`). See `docs/PROTOCOL.md`.
 
 ## Out of scope
 
-gemot's integration (wiring this into gemot's `internal/payments`, deciding which tools to
-meter, the prepay-credit ledger) is gemot's job, not chit's. chit stays a general-purpose
-module.
+Integrating chit into any specific downstream application (deciding which tools to meter,
+how to credit a ledger, what to charge) is that application's job, not chit's. chit stays a
+general-purpose module.

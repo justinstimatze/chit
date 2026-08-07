@@ -95,7 +95,7 @@ func getJSONMap(ctx context.Context, endpoint string, hc *http.Client, logger Lo
 		logger.Warnf("%s: failed to fetch %s: %v; advertising exact only", caller, endpoint, err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Warnf("%s: %s returned %d; advertising exact only", caller, endpoint, resp.StatusCode)
 		return nil
@@ -176,7 +176,7 @@ func doFetchMppSupported(ctx context.Context, endpoint string, hc *http.Client, 
 		logger.Warnf("fetchMppSupported: failed to fetch %s: %v; advertising charge only", endpoint, err)
 		return mppSupportedResult{}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Warnf("fetchMppSupported: %s returned %d; advertising charge only", endpoint, resp.StatusCode)
 		return mppSupportedResult{}

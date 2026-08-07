@@ -1,112 +1,62 @@
-# ATXP Go client — build handoff
+# ATXP protocol reference
 
-## STATUS (2026-06-10): client built + tested, ready for integration
+Goal: let a Go program call paid ATXP MCP tools (web search, image/video/music
+gen, X search, SMS, voice, code exec, …) using a **hosted ATXP account**
+(connection string). ATXP is used only as a paid-tool rail; what the caller
+does with the results is up to the caller.
 
-A working hosted-account client lives in `internal/atxp/` — `account.go`, `oauth.go`,
-`store.go`, `transport.go`, `client.go` (+ `atxp_test.go`, `live_test.go`). It builds,
-vets, gofmt-clean. **9 unit tests pass** (httptest, incl. a full 401→OAuth→payment→200
-flow). Use:
+Source of truth: read the TypeScript SDK at `github.com/atxp-dev/sdk`
+(packages `atxp-client`, `atxp-common`, `atxp-server`) directly — see
+CLAUDE.md's "Keeping in sync with upstream" for how. All file:line references
+below are into that tree.
 
-```go
-c, _ := atxp.New(atxp.Config{ConnectionString: os.Getenv("ATXP_CONNECTION")})
-sess, _ := c.Connect(ctx, "https://search.mcp.atxp.ai/")
-res, _ := sess.CallTool(ctx, &mcp.CallToolParams{Name: "search", Arguments: map[string]any{"query": "..."}})
-```
+## Account model
 
-**Proven live against production** (`go test -tags atxplive`): PRM/AS discovery + dynamic
-client registration (real `client_id` minted on `auth.atxp.ai`); `/me` (credential valid).
-The client wiring uses go-sdk v1.6.1 `StreamableClientTransport.HTTPClient` — no MCP fork.
+- `npx atxp agent register` creates an **orphan** agent (no human login, no
+  owner). A fresh orphan is `fraud_blocked` and cannot `/sign` or pay until a
+  payment method is added to that specific account.
+- The web `/fund` page funds the account you're logged into by email (a
+  separate `human`-type owner account), not the orphan agent. Funding the
+  orphan goes through `npx atxp fund` (bills the token in `~/.atxp/config`).
+- A `human`-type account funded via the web, using its connection string from
+  the dashboard **Servers** page, works directly — the orphan `agent
+  register` flow isn't required.
+- The client surfaces a blocked account as a typed `RestrictionError`;
+  `live_test.go` skips with that reason if the configured account is
+  unfunded/blocked.
 
-**FULLY proven live end-to-end (2026-06-10):** `TestLivePaidPath` passed against
-production — discovery → DCR → `/me` → `/sign` → `/authorize/auto` → MCP payment retry →
-a real `search_search` result, paid from a funded account. The `/sign` and payment-settle
-paths (built from TS source) interlock correctly with the real servers. Nothing in the
-client is unverified anymore.
+## Pull-mode `/charge` needs an established Connection, not just funds
 
-**Account model gotcha (cost real time — flag for setup):**
-- `npx atxp agent register` creates an **orphan** agent (`isOrphan: true`, no human login,
-  no owner). A fresh orphan is `fraud_blocked` and cannot `/sign` or pay until a payment
-  method is added to *that specific account*. My earlier "new accounts get ~10 free IOU
-  credits" was wrong — registration showed `Funded: 0`.
-- The web `/fund` page funds the account you're **logged into by email** (a separate
-  `human`-type owner account), NOT the orphan agent. Funding the orphan must go through
-  `npx atxp fund` (which bills the token in `~/.atxp/config`).
-- What actually worked: a `human`-type account funded via the web, whose connection string
-  is exposed on the dashboard **Servers** page. That account had `funded: true`, `/sign`
-  returned `signed: true`, and the paid call succeeded. So gemot can use a funded account's
-  dashboard connection string directly — it does not need the orphan `agent register` flow.
-- The client surfaces the blocked state as a typed `RestrictionError`; `live_test.go`
-  skips with that reason if the configured account is unfunded/blocked.
+- An account's displayed balance is real and spendable, but only through a
+  full OAuth-authorized session with a specific resource.
+- `server.RequirePayment`'s on-demand path (`SourceAccountToken` → `POST
+  /charge`) only succeeds if the payer has already connected to *that
+  specific resource* — see **Connections → Add MCP Server** on
+  `accounts.atxp.ai`. Without a Connection, `/charge` returns 402 with
+  `shortage: <amount>` for any amount, regardless of real balance; `GET
+  /balance` on the same auth server independently confirms this by returning
+  `0` for an unconnected caller.
+- A Connection forms automatically and headlessly the first time a client
+  pays a resource (no dashboard step needed) — chit's client already does
+  this. It requires the resource to be a real, reachable HTTPS server (PRM
+  discovery + DCR + `/authorize` all hit it over the network); a
+  placeholder/synthetic `Resource` string can never form one.
 
-Re-run live: `ATXP_CONNECTION=<funded-account-connection-string> go test -tags atxplive -run TestLivePaidPath ./internal/atxp/...`
-(or persist via `npx atxp login --token "..."`, which `live_test.go` reads from `~/.atxp/config`).
+## Reference merchants
 
-**Pull-mode `/charge` gotcha — needs an established Connection, not just funds:**
-- An account's displayed balance (dashboard, `npx atxp balance`) is real and spendable, but
-  only through a full OAuth-authorized session with a specific resource — what happens
-  transparently when a client calls a first-party tool like `search`.
-- `server.RequirePayment`'s on-demand path (`SourceAccountToken` → `POST /charge`) only
-  succeeds if the payer has already connected to *that specific resource* — see
-  **Connections → Add MCP Server** on `accounts.atxp.ai`. Without a Connection, `/charge`
-  returns 402 with `shortage: <amount>` for any amount, regardless of real balance —
-  `GET /balance` on the same auth server independently confirms this by returning `0` for
-  an unconnected caller.
-- A Connection forms automatically and headlessly the first time a client pays a resource
-  (no dashboard step needed) — chit's client already does this. It requires the resource to
-  be a real, reachable HTTPS server (PRM discovery + DCR + `/authorize` all hit it over the
-  network); a placeholder/synthetic `Resource` string can never form one.
-
-**Reference merchant + how to live-test a Connection forming for real:**
-- `examples/paidmcp` is a real, runnable MCP server wrapping `server.Merchant` (a paid
-  `ping` tool, `$0.01`) and `examples/paidmcp/client` drives the payer side through chit's
-  client package — useful whenever you need an actual reachable resource to test against,
-  not just `server/live_test.go`'s in-process challenge checks.
-- To expose it publicly for a real OAuth handshake: `tailscale funnel <port>` (needs Funnel
-  enabled on the tailnet and `sudo tailscale set --operator=$USER` once, run interactively —
-  not through a non-TTY agent shell). Plain private Tailscale networking is NOT enough;
-  ATXP's cloud backend needs a real public URL.
-- `server.StaticDestination` needs real chain addresses in `Addresses` (from the merchant
-  account's own `GET /me` → `sources[]`), not just the bare `ID` — otherwise x402/MPP
-  options are silently empty (`no x402-compatible networks among N sources` in the log).
-
-**Bug found and fixed this way (2026-08-05):** `store.go`'s `GetAccessToken` parent-path
-walk had a trailing-slash mismatch — a token saved for a bare origin (`https://host`, what
-`authenticate()` saves under when the resource URL has no path) never matched a lookup for
-a single-segment request path (`https://host/mcp`), so the walk gave up one level short of
-the origin. This silently forced a full re-authentication on every single request instead of
-reusing the cached token. Invisible until now because the only resource ever live-tested
-(`search.mcp.atxp.ai`) happens to serve at the root path, hiding the mismatch by coincidence.
-Fixed in `store.go`; regression test `TestMemoryStoreParentPathWalkToBareOrigin` in
-`atxp_test.go`.
-
-**Current live wall (2026-08-05, not a chit issue):** with the above fixed, a Connection now
-forms correctly and a real 402 challenge is issued — but the actual settlement call fails at
-`auth.atxp.ai`'s `/authorize/auto` with `403 Destination not allowed for IOU conversion`.
-Unaffected by enabling "Enable MCP servers" on the merchant account's Servers page, or by
-attaching real chain addresses to the destination. Looks like a platform-side restriction on
-which accounts can receive converted funds (possibly compliance-related) — not something
-fixable via chit config. Worth asking ATXP support about directly with this exact error.
-
-### Open decisions for the gemot session (architecture-dependent — not decided here)
-
-- Where `ATXP_CONNECTION` lives in gemot config (env / config file / secret store). It is
-  **wallet-grade**: never log it, never pass as a CLI arg, never send outbound. The CLI
-  stores it in `~/.atxp/config`; `liveConnectionString()` in live_test.go shows the read.
-- Which ATXP tools gemot calls and where in the deliberation flow (search? image? none?).
-- Funding policy: one shared agent account vs per-user/per-deliberation; Stripe vs USDC.
-- The call sites wiring `atxp.Client` into the deliberation engine.
-
----
-
-
-
-Goal: let gemot (Go) call paid ATXP MCP tools (web search, image/video/music gen, X
-search, SMS, voice, code exec, …) using a **hosted ATXP account** (connection string).
-Inference stays on the native Anthropic SDK — ATXP is used only as a paid-tool rail.
-
-Source of truth: read off the TypeScript SDK at `github.com/atxp-dev/sdk`
-(packages `atxp-client`, `atxp-common`). Clone was at `/tmp/atxp-sdk`. All file:line
-references below are into that tree.
+- `examples/paidmcp` is a real, runnable MCP server wrapping `server.Merchant`
+  (a paid `ping` tool, `$0.01`); `examples/paidmcp/client` drives the payer
+  side through chit's client package.
+- `examples/x402stranger` is the equivalent for the bare-402, no-OAuth,
+  self-custodial path (see the payment-modes table below).
+- To expose a local merchant publicly for a real OAuth handshake: `tailscale
+  funnel <port>` (needs Funnel enabled on the tailnet and `sudo tailscale set
+  --operator=$USER` once, run interactively). Plain private Tailscale
+  networking is not enough; ATXP's cloud backend needs a real public URL.
+- `server.StaticDestination` needs real chain addresses in `Addresses` (from
+  the merchant account's own `GET /me` → `sources[]`), not just the bare
+  `ID` — otherwise x402/MPP options are silently empty (`no x402-compatible
+  networks among N sources` in the log).
 
 ## Scope decision
 
@@ -115,7 +65,7 @@ ATXP has **two account types** (`atxpFetcher.ts:238`):
 - **`ATXPAccount` (hosted, connection string)** — `usesAccountsAuthorize = true`. The
   client does **zero on-chain crypto**: every signing/settlement op is an HTTP call to
   the ATXP accounts server. Only `ATXPAccountHandler` is used; the x402/MPP local payment
-  makers are never instantiated. **This is what gemot builds.**
+  makers are never instantiated. **This is what chit's root package builds.**
 - Self-custodial (Base/Solana wallet) — uses `@x402/evm`, EIP-712 signing,
   `X402ProtocolHandler`/`MPPProtocolHandler`. **Built and live-verified
   (2026-08-06):** `x402signer/` implements EIP-3009 "exact"-scheme signing on

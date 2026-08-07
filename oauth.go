@@ -157,7 +157,7 @@ func (c *oauthClient) registerClient(ctx context.Context, as authServer) (Client
 		"response_types":             []string{"code"},
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_method": "client_secret_post",
-		"client_name":                "gemot ATXP client",
+		"client_name":                "chit ATXP client",
 	}
 	buf, _ := json.Marshal(meta)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, as.RegistrationEndpoint, strings.NewReader(string(buf)))
@@ -171,7 +171,7 @@ func (c *oauthClient) registerClient(ctx context.Context, as authServer) (Client
 	if err != nil {
 		return ClientCredentials{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ClientCredentials{}, fmt.Errorf("client registration failed: status %d: %s", resp.StatusCode, body)
@@ -250,18 +250,6 @@ func (c *oauthClient) exchangeCode(ctx context.Context, as authServer, cc Client
 	return c.tokenRequest(ctx, as, form)
 }
 
-// refresh exchanges a refresh token for a fresh access token.
-func (c *oauthClient) refresh(ctx context.Context, as authServer, cc ClientCredentials, refreshToken string) (AccessToken, error) {
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-	form.Set("client_id", cc.ClientID)
-	if cc.ClientSecret != "" {
-		form.Set("client_secret", cc.ClientSecret)
-	}
-	return c.tokenRequest(ctx, as, form)
-}
-
 func (c *oauthClient) tokenRequest(ctx context.Context, as authServer, form url.Values) (AccessToken, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, as.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -273,7 +261,7 @@ func (c *oauthClient) tokenRequest(ctx context.Context, as authServer, form url.
 	if err != nil {
 		return AccessToken{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return AccessToken{}, fmt.Errorf("token endpoint status %d: %s", resp.StatusCode, body)
@@ -307,7 +295,7 @@ func (c *oauthClient) get(ctx context.Context, u string) (int, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, body, nil
 }
@@ -383,7 +371,7 @@ func (c *oauthClient) requestAuthorizationCode(ctx context.Context, authURL, jwt
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {

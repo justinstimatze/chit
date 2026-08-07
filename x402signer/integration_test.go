@@ -21,12 +21,12 @@ func TestFullFlow_BareX402ThenPaid(t *testing.T) {
 	paid := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if paid {
-			io.WriteString(w, "paid ok")
+			_, _ = io.WriteString(w, "paid ok")
 			return
 		}
 		if h := r.Header.Get("X-Payment"); h != "" {
 			paid = true
-			io.WriteString(w, "paid ok")
+			_, _ = io.WriteString(w, "paid ok")
 			return
 		}
 		x402, _ := json.Marshal(x402PaymentRequirements{
@@ -53,7 +53,7 @@ func TestFullFlow_BareX402ThenPaid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK || string(body) != "paid ok" {
 		t.Fatalf("status=%d body=%q, want 200 \"paid ok\"", resp.StatusCode, body)

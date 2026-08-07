@@ -11,7 +11,7 @@ import (
 )
 
 // MCP JSON-RPC error codes that signal "payment required". -30402 is the legacy
-// ATXP code; -32042 is the newer omni/MPP code (also used by gemot's own server).
+// ATXP code; -32042 is the newer omni/MPP code.
 const (
 	codePaymentRequiredLegacy = -30402
 	codePaymentRequiredOmni   = -32042
@@ -54,7 +54,7 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		if resourceURL == "" {
 			resourceURL = trimToPath(req.URL.String())
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err := rt.oauth.authenticate(ctx, resourceURL); err != nil {
 			return nil, fmt.Errorf("atxp: oauth: %w", err)
 		}
@@ -70,7 +70,7 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	if pay != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err := rt.settle(ctx, req, pay); err != nil {
 			return nil, fmt.Errorf("atxp: payment: %w", err)
 		}
@@ -316,7 +316,7 @@ func bufferBody(req *http.Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Body.Close()
+	_ = req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewReader(b))
 	return b, nil
 }

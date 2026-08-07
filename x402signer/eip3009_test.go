@@ -16,11 +16,10 @@ import (
 // secret, used across the whole Ethereum tooling ecosystem purely to produce
 // a verifiable KAT). See the generating script's inputs reproduced below.
 const (
-	katPrivHex   = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-	katAddress   = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-	katTo        = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-	katDigestHex = "2c16c124e6d59776149e8e6eb2477e1a94ebaebe739d24d65183424ada1c7c84"
-	katSigHex    = "4f46f1af86b1f62019ab96fd7e546d8d7d20a264bb1794a74ca0803f125a55da70833846d6536d36cf32ba291b947af383c7f27634de9c8cbc9220cdbcb8b27b1b"
+	katPrivHex = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+	katAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+	katTo      = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+	katSigHex  = "4f46f1af86b1f62019ab96fd7e546d8d7d20a264bb1794a74ca0803f125a55da70833846d6536d36cf32ba291b947af383c7f27634de9c8cbc9220cdbcb8b27b1b"
 )
 
 func katDomain() eip712Domain {

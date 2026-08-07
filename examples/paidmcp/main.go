@@ -42,11 +42,9 @@ type pingArgs struct{}
 
 // fetchAccountSources reads the account's own chain addresses off GET /me, so
 // the merchant's Destination can advertise real x402/MPP payout addresses
-// instead of just the bare ATXP-native account id. Without this, ATXP's own
-// /authorize/auto rejected settlement with "DESTINATION_NOT_ALLOWED — not
-// allowed for IOU conversion": apparently even ATXP-native settlement needs a
-// real chain address to convert the payer's balance into, not just an
-// internal ledger entry.
+// instead of just the bare ATXP-native account id. ATXP's settlement requires
+// a real chain address to convert into, not just an internal ledger entry
+// (see docs/PROTOCOL.md's IOU-conversion notes).
 func fetchAccountSources(ctx context.Context, origin, token string) ([]server.Source, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/me", nil)
 	if err != nil {
@@ -57,7 +55,7 @@ func fetchAccountSources(ctx context.Context, origin, token string) ([]server.So
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("/me returned %d", resp.StatusCode)
 	}

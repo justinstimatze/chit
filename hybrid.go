@@ -11,8 +11,8 @@ import "context"
 // gated behind an OAuth 401 still requires one before it ever issues a
 // payment challenge.
 //
-// Live-verified 2026-08-06: an ATXPAccount for Identity plus an
-// x402signer.X402SignerAccount for Payments settles a real x402 payment
+// An ATXPAccount for Identity plus an x402signer.X402SignerAccount for
+// Payments is a live-verified combination: it settles a real x402 payment
 // against an OAuth-gated third-party merchant, confirmed on-chain.
 //
 // If the resource is gated purely by a bare 402 (no OAuth 401 first),

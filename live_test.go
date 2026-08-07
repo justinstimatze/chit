@@ -1,7 +1,7 @@
 //go:build atxplive
 
 // Live, credential-free integration test against real ATXP infrastructure.
-// Run explicitly:  go test -tags atxplive -run TestLive ./internal/atxp/...
+// Run explicitly:  go test -tags atxplive -run TestLive ./...
 //
 // It exercises the parts of the OAuth flow that need no account or crypto:
 // protected-resource discovery, authorization-server metadata, and dynamic

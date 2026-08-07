@@ -223,7 +223,7 @@ func (c *resourceClient) registerClient(ctx context.Context, m authServerMeta) (
 	if err != nil {
 		return atxp.ClientCredentials{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return atxp.ClientCredentials{}, fmt.Errorf("atxp server: client registration failed: status %d", resp.StatusCode)
@@ -298,7 +298,7 @@ func (c *resourceClient) introspectOnce(ctx context.Context, endpoint, clientID,
 	if err != nil {
 		return 0, nil, fmt.Errorf("atxp server: introspection request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, body, nil
 }
@@ -313,7 +313,7 @@ func (c *resourceClient) get(ctx context.Context, u string) (int, []byte, error)
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, body, nil
 }
