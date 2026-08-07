@@ -14,6 +14,15 @@
 //	X402_PRIVATE_KEY=<hex> \
 //	go run ./examples/mcppay/client \
 //	    -tool account -arg action=buy_credits -arg pack=Starter
+//
+// Pass -challenge-only to stop after the first call and print the
+// payment_required result, without ever loading a key, signing, or paying —
+// useful for proving a merchant's challenge path (e.g. DCR registration)
+// works without moving any money:
+//
+//	MCP_ENDPOINT=http://127.0.0.1:8080/mcp MCP_API_KEY=<bearer token> \
+//	go run ./examples/mcppay/client -challenge-only \
+//	    -tool account -arg action=buy_credits -arg pack=Starter
 package main
 
 import (
@@ -49,6 +58,7 @@ func main() {
 	toolName := flag.String("tool", "account", "MCP tool name to call")
 	credArg := flag.String("credential-arg", "payment_credential", "argument name the retry call carries the signed credential under")
 	network := flag.String("network", "eip155:8453", "CAIP-2 network to pin the signature to (empty accepts any offered eip155 network)")
+	challengeOnly := flag.Bool("challenge-only", false, "stop after the first call and print the payment_required challenge; never signs or pays")
 	var argsFlag argList
 	flag.Var(&argsFlag, "arg", "tool argument as key=value (repeatable)")
 	flag.Parse()
@@ -61,16 +71,20 @@ func main() {
 	if apiKey == "" {
 		log.Fatal("MCP_API_KEY not set")
 	}
-	privHex := os.Getenv("X402_PRIVATE_KEY")
-	if privHex == "" {
-		log.Fatal("X402_PRIVATE_KEY not set")
-	}
 
-	signer, err := x402signer.NewFromPrivateKeyHex(privHex, *network)
-	if err != nil {
-		log.Fatalf("x402signer: %v", err)
+	var signer *x402signer.X402SignerAccount
+	if !*challengeOnly {
+		privHex := os.Getenv("X402_PRIVATE_KEY")
+		if privHex == "" {
+			log.Fatal("X402_PRIVATE_KEY not set")
+		}
+		var err error
+		signer, err = x402signer.NewFromPrivateKeyHex(privHex, *network)
+		if err != nil {
+			log.Fatalf("x402signer: %v", err)
+		}
+		log.Printf("paying as %s", signer.Address())
 	}
-	log.Printf("paying as %s", signer.Address())
 
 	ctx := context.Background()
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcppay-client", Version: "v0.1.0"}, nil)
@@ -98,6 +112,10 @@ func main() {
 	}
 	if len(env.Challenge.X402) == 0 {
 		log.Fatal("payment_required result carried no challenge.x402")
+	}
+	if *challengeOnly {
+		fmt.Println(text)
+		return
 	}
 
 	result, err := signer.Authorize(ctx, atxp.AuthorizeParams{PaymentRequirements: env.Challenge.X402})

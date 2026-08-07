@@ -87,6 +87,17 @@ func main() {
 	lastPaymentID := map[string]string{}
 
 	http.HandleFunc("/pay", func(w http.ResponseWriter, r *http.Request) {
+		// User: merchantID is a placeholder — there is no OAuth-authenticated
+		// caller for a genuine x402 stranger. This makes every first call a
+		// source==destination self-charge, which server/live_test.go's
+		// TestLiveSettlesRealPayment notes the AS "may treat ... specially":
+		// in practice, /charge has been observed to report an unauthenticated
+		// self-charge as already-settled shortly after this same merchant
+		// account was involved in a real settlement, rather than reliably
+		// declining with 402. RequirePayment can't distinguish that from a
+		// legitimate pre-authorized pull, so it isn't something chit's gate
+		// can work around; a merchant relying on this example's shape should
+		// know call-1 isn't guaranteed to always yield a fresh challenge.
 		pr := server.PaymentRequest{Price: price, User: merchantID, Resource: resourceURL}
 
 		var session *server.PaymentSession
