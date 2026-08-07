@@ -1,4 +1,4 @@
-# chit — working notes for Claude Code
+# chit: working notes for Claude Code
 
 `chit` is an **unofficial Go module for ATXP** (Agent Transaction Protocol, by
 Circuit & Chisel). It's a clean-room-from-source port of their MIT-licensed TypeScript
@@ -9,17 +9,17 @@ the root package is `atxp` so callers write `atxp.New(...)`.
 
 - **Blatantly unofficial.** Never describe chit as "the official Go SDK" or imply
   endorsement. Descriptive use of the name "ATXP" only. The README and LICENSE carry
-  the unofficial disclaimer and retain Circuit & Chisel's MIT copyright — keep both.
+  the unofficial disclaimer and retain Circuit & Chisel's MIT copyright. Keep both.
 - **Connection strings are wallet-grade secrets.** Never log, echo, commit, pass as a
   CLI arg, or transmit them. They live in `ATXP_CONNECTION` / `~/.atxp/config`, both
   gitignored.
 - Default new code to idiomatic Go; the existing client is dependency-light (stdlib +
   `github.com/modelcontextprotocol/go-sdk`). The hosted-account path does **no on-chain
-  crypto** — keep it that way; settlement is delegated to ATXP over HTTP.
+  crypto**. Keep it that way; settlement is delegated to ATXP over HTTP.
 
 ## State of play
 
-- **Client (done, validated live against production):** root package `atxp` —
+- **Client (done, validated live against production):** root package `atxp`:
   `account.go`, `oauth.go`, `store.go`, `transport.go`, `client.go` (+ `atxp_test.go`,
   `live_test.go`). Connects to paid ATXP MCP servers; handles OAuth (discovery, dynamic
   client registration, PKCE, the ATXP `/sign` + `redirect=false` authorization trick) and
@@ -31,15 +31,15 @@ the root package is `atxp` so callers write `atxp.New(...)`.
   Tempo/Solana `session`-intent challenges (advertised when the auth server supports them),
   and an explicit `PaymentSession` (`Merchant.OpenPaymentSession`/`CloseSession`) so several
   `RequirePayment` calls sharing one retry credential can charge locally and settle once, for
-  the metered actual rather than the credential's full cap — the Go equivalent of upstream's
-  Express-middleware session-close settlement, since chit has no middleware layer to open/close
-  it implicitly.
-- **Self-custodial x402 signing (done, live-verified):** `x402signer/` — an `atxp.Account`
+  the metered actual rather than the credential's full cap. This is the Go equivalent of
+  upstream's Express-middleware session-close settlement, since chit has no middleware layer
+  to open/close it implicitly.
+- **Self-custodial x402 signing (done, live-verified):** `x402signer/`, an `atxp.Account`
   implementation that pays an x402 "exact"-scheme challenge by signing an EIP-3009
-  `transferWithAuthorization` with a raw secp256k1 key (no RPC, no gas, no broadcast — it only
+  `transferWithAuthorization` with a raw secp256k1 key (no RPC, no gas, no broadcast; it only
   signs). New dependency: `github.com/ethereum/go-ethereum` (isolated to this subpackage so the
   root package's dependency graph is unaffected). Built because the hosted/ATXP-native rail
-  turns out to be restricted to ATXP's own first-party services for real settlement — see
+  turns out to be restricted to ATXP's own first-party services for real settlement. See
   `docs/PROTOCOL.md`'s IOU-conversion notes; x402/MPP are the actual third-party-payment rails.
   Real settlement confirmed on Base mainnet, verified via the on-chain `Transfer` event log
   (see `docs/PROTOCOL.md`'s payment-modes table), including the true stranger-to-stranger case
@@ -50,7 +50,7 @@ the root package is `atxp` so callers write `atxp.New(...)`.
 
 ## Keeping in sync with upstream
 
-chit tracks `atxp-dev/sdk` (TS) by re-reading it periodically, not via a dependency pin — it
+chit tracks `atxp-dev/sdk` (TS) by re-reading it periodically, not via a dependency pin. It
 is not vendored. To check for drift:
 
 ```
@@ -59,16 +59,16 @@ cd /tmp/atxp-sdk-check && git log --oneline -20 -- packages/atxp-server/src pack
 ```
 
 Read new commits' diffs directly (`git show <sha>`) rather than trusting commit-message
-summaries alone — the wire contract details (which field is atomic vs decimal, which scheme
+summaries alone. The wire contract details (which field is atomic vs decimal, which scheme
 gates which override) live in the diff, not the message. Skip anything under `atxp-base`/
-`atxp-x402` self-custody signer paths — chit's client only implements the hosted `ATXPAccount`
+`atxp-x402` self-custody signer paths. chit's client only implements the hosted `ATXPAccount`
 path (see `docs/PROTOCOL.md`'s Scope decision), so self-custody-only changes don't apply.
 
 Port order for a new merchant-side feature: `packages/atxp-server/src/omniChallenge.ts` (data
 assembly) → `protocol.ts` (settle-body / detection changes) → `paymentSession.ts` (if it's a
 metering change) → `requirePayment.ts` (wiring). Match `server/omnichallenge.go` →
 `server/protocol.go` → `server/paymentsession.go` → `server/requirepayment.go` respectively.
-Port faithfully — reinventing payment verification is how you accidentally give service away
+Port faithfully: reinventing payment verification is how you accidentally give service away
 free.
 
 ## Build & test
@@ -87,7 +87,7 @@ runs CodeQL on push/PR and weekly. Mirror the fast checks locally before pushing
 runs on every commit.
 
 A freshly `npx atxp@latest agent register`-ed account is an **orphan**, unfunded, and
-`fraud_blocked` — it cannot `/sign` or pay. The web `/fund` page funds the email-login
+`fraud_blocked`; it cannot `/sign` or pay. The web `/fund` page funds the email-login
 *owner* account, not the orphan. Use a funded account's connection string from the
 dashboard **Servers** page (`funded: true`). See `docs/PROTOCOL.md`.
 

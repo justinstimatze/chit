@@ -1,15 +1,15 @@
 # chit
 
 **Unofficial Go client and merchant library for [ATXP](https://docs.atxp.ai).**
-Not affiliated with, authorized by, or endorsed by Circuit & Chisel — the
+chit is not affiliated with, authorized by, or endorsed by Circuit & Chisel, the
 makers of ATXP. For the official, supported SDK, use their TypeScript one:
 https://github.com/atxp-dev/sdk
 
-`chit` lets a Go program act as an ATXP **client** (pay for MCP tools) and/or
-a **merchant** (charge callers for MCP tools), including self-custodial x402
-payments that need no ATXP account at all on the paying side.
+chit lets a Go program act as an ATXP **client** (pay for MCP tools), a
+**merchant** (charge callers for MCP tools), or both. It includes self-custodial
+x402 payments, so a payer needs no ATXP account at all.
 
-The module path is a codename (`chit`) but the package is `atxp`, so it reads
+The module path is a codename (`chit`), but the package is `atxp`, so it reads
 naturally:
 
 ### Client
@@ -31,11 +31,10 @@ res, _ := sess.CallTool(ctx, &mcp.CallToolParams{
 
 ### Merchant
 
-Charging callers, using chit's headline capability: self-custodial x402,
-where the payer needs no ATXP account at all. This is the minimal shape;
-see `examples/x402stranger` for the complete, correct version (it also
-caches the `X402PaymentRequirements` a settle call needs, which this
-snippet omits for brevity):
+This example charges callers with self-custodial x402: the payer needs no
+ATXP account at all. It's the minimal shape. See `examples/x402stranger` for
+the complete version, including the `X402PaymentRequirements` cache a settle
+call needs (omitted here for brevity):
 
 ```go
 import (
@@ -76,11 +75,11 @@ http.HandleFunc("/pay", func(w http.ResponseWriter, r *http.Request) {
 
 ### Paying an OAuth-gated resource with no ATXP account
 
-The merchant above accepts a bare 402, no OAuth needed. If the resource is
-gated behind an OAuth 401 first, the payer needs *some* ATXP identity to
-complete the handshake, even though the actual payment is still
-self-custodial. `atxp.HybridAccount` splits the two: OAuth identity from a
-real `ATXPAccount`, payment signing from `x402signer`:
+The merchant above accepts a bare 402; no OAuth needed. If the resource
+gates behind an OAuth 401 first, the payer needs some ATXP identity to
+complete the handshake, even though the payment itself stays self-custodial.
+`atxp.HybridAccount` splits the two: OAuth identity from a real
+`ATXPAccount`, payment signing from `x402signer`:
 
 ```go
 import (
@@ -95,29 +94,29 @@ acct := &atxp.HybridAccount{Identity: oauthAcct, Payments: signerAcct}
 c, _ := atxp.NewWithAccount(atxp.Config{}, acct)
 ```
 
-The hosted-account client path does **no on-chain crypto**: signing and
+The hosted-account client path does **no on-chain crypto**. Signing and
 settlement are delegated to ATXP over HTTP. A connection string is a
-**wallet-grade secret** — never log it, pass it as a CLI argument, or send it
-anywhere. `x402signer/` is the exception: it signs EIP-3009 authorizations
+**wallet-grade secret**: never log it, pass it as a CLI argument, or send it
+anywhere. `x402signer/` is the exception. It signs EIP-3009 authorizations
 directly with a raw secp256k1 key, isolated to its own subpackage so the root
 package's dependency graph stays crypto-free.
 
 ## Status
 
-- **Client** — done, validated end-to-end against production (discovery,
+- **Client**: done, validated end-to-end against production (discovery,
   dynamic client registration, OAuth, `/sign`, `/authorize/auto`, payment
   retry, a real paid tool call). Lives at the module root (`package atxp`).
-- **Server / merchant** — done. `server.RequirePayment` gates a metered call;
-  `CheckToken`/`CheckRequest` authenticate callers; `Verify`/`Settle` finalize
-  a push-payment retry credential; `Merchant.OpenPaymentSession`/
+- **Server / merchant**: done. `server.RequirePayment` gates a metered call.
+  `CheckToken`/`CheckRequest` authenticate callers. `Verify`/`Settle` finalize
+  a push-payment retry credential. `Merchant.OpenPaymentSession`/
   `CloseSession` let several calls sharing one retry credential settle once.
-- **Self-custodial x402 signing** (`x402signer/`) — done, live-verified. Pays
-  an x402 "exact"-scheme challenge by signing an EIP-3009
-  `transferWithAuthorization` with a raw key, no ATXP account, no OAuth, no
-  prior relationship with the merchant required. Real settlement confirmed
-  on Base mainnet, verified via the chain's own `Transfer` event log, not
-  just an API response. `atxp.HybridAccount` pairs this with an
-  `ATXPAccount`'s OAuth identity for resources gated behind an OAuth 401
+- **Self-custodial x402 signing** (`x402signer/`): done, live-verified. It
+  pays an x402 "exact"-scheme challenge by signing an EIP-3009
+  `transferWithAuthorization` with a raw key. No ATXP account, no OAuth, and
+  no prior relationship with the merchant required. Real settlement is
+  confirmed on Base mainnet and verified against the chain's own `Transfer`
+  event log, not just an API response. `atxp.HybridAccount` pairs this with
+  an `ATXPAccount`'s OAuth identity for resources gated behind an OAuth 401
   rather than a bare 402.
 
 See `docs/PROTOCOL.md`'s payment-modes table for exactly which combinations
@@ -126,11 +125,11 @@ with sequence diagrams for each.
 
 ## Examples
 
-- `examples/paidmcp` — an OAuth-gated MCP server charging $0.01 per tool call,
-  plus a client that pays it. Demonstrates the hosted-account and hybrid x402
-  paths.
-- `examples/x402stranger` — a bare-402 merchant and a client with no ATXP
-  account at all, demonstrating true stranger-to-stranger payment.
+- `examples/paidmcp`: an OAuth-gated MCP server that charges $0.01 per tool
+  call, plus a client that pays it. Demonstrates the hosted-account and
+  hybrid x402 paths.
+- `examples/x402stranger`: a bare-402 merchant and a client with no ATXP
+  account at all. Demonstrates stranger-to-stranger payment.
 
 ## Testing
 
@@ -143,15 +142,15 @@ go test -tags serverlive -run TestLive ./server/...   # merchant live; needs fun
 
 The live tests need a funded ATXP account connection string, read from
 `ATXP_CONNECTION` or `~/.atxp/config`. A freshly `agent register`-ed account
-is unfunded and fraud-blocked; use a funded account's connection string from
+is unfunded and fraud-blocked. Use a funded account's connection string from
 the dashboard **Servers** page instead. See `docs/PROTOCOL.md` for the full
 account-model details.
 
 ## Docs
 
-- `docs/PROTOCOL.md` — the ATXP wire protocol as reverse-engineered from the
-  TS SDK: the OAuth + payment flow, endpoint table, and every payment mode
-  that's actually been tested live, with sequence diagrams.
+- `docs/PROTOCOL.md`: the ATXP wire protocol as reverse-engineered from the
+  TS SDK. Covers the OAuth and payment flow, the endpoint table, and every
+  payment mode that's actually been tested live, with sequence diagrams.
 
 ## License
 

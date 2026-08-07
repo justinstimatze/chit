@@ -6,7 +6,7 @@ gen, X search, SMS, voice, code exec, …) using a **hosted ATXP account**
 does with the results is up to the caller.
 
 Source of truth: read the TypeScript SDK at `github.com/atxp-dev/sdk`
-(packages `atxp-client`, `atxp-common`, `atxp-server`) directly — see
+(packages `atxp-client`, `atxp-common`, `atxp-server`) directly. See
 CLAUDE.md's "Keeping in sync with upstream" for how. All file:line references
 below are into that tree.
 
@@ -19,7 +19,7 @@ below are into that tree.
   separate `human`-type owner account), not the orphan agent. Funding the
   orphan goes through `npx atxp fund` (bills the token in `~/.atxp/config`).
 - A `human`-type account funded via the web, using its connection string from
-  the dashboard **Servers** page, works directly — the orphan `agent
+  the dashboard **Servers** page, works directly. The orphan `agent
   register` flow isn't required.
 - The client surfaces a blocked account as a typed `RestrictionError`;
   `live_test.go` skips with that reason if the configured account is
@@ -31,13 +31,13 @@ below are into that tree.
   full OAuth-authorized session with a specific resource.
 - `server.RequirePayment`'s on-demand path (`SourceAccountToken` → `POST
   /charge`) only succeeds if the payer has already connected to *that
-  specific resource* — see **Connections → Add MCP Server** on
+  specific resource*. See **Connections → Add MCP Server** on
   `accounts.atxp.ai`. Without a Connection, `/charge` returns 402 with
   `shortage: <amount>` for any amount, regardless of real balance; `GET
   /balance` on the same auth server independently confirms this by returning
   `0` for an unconnected caller.
 - A Connection forms automatically and headlessly the first time a client
-  pays a resource (no dashboard step needed) — chit's client already does
+  pays a resource (no dashboard step needed). chit's client already does
   this. It requires the resource to be a real, reachable HTTPS server (PRM
   discovery + DCR + `/authorize` all hit it over the network); a
   placeholder/synthetic `Resource` string can never form one.
@@ -51,7 +51,7 @@ first-party services this happens transparently. For a third-party merchant
 it doesn't: `/authorize/auto` rejects it with `403 DESTINATION_NOT_ALLOWED`
 regardless of Connection state or chain addresses attached to the
 destination (payment-modes table, case 2, below). This is why `x402signer/`
-exists — x402/MPP are the rails that actually convert to real settled money
+exists: x402/MPP are the rails that actually convert to real settled money
 for a non-ATXP destination.
 
 ## Reference merchants
@@ -67,32 +67,32 @@ for a non-ATXP destination.
   networking is not enough; ATXP's cloud backend needs a real public URL.
 - `server.StaticDestination` needs real chain addresses in `Addresses` (from
   the merchant account's own `GET /me` → `sources[]`), not just the bare
-  `ID` — otherwise x402/MPP options are silently empty (`no x402-compatible
+  `ID`, otherwise x402/MPP options are silently empty (`no x402-compatible
   networks among N sources` in the log).
 
 ## Scope decision
 
 ATXP has **two account types** (`atxpFetcher.ts:238`):
 
-- **`ATXPAccount` (hosted, connection string)** — `usesAccountsAuthorize = true`. The
+- **`ATXPAccount` (hosted, connection string)**: `usesAccountsAuthorize = true`. The
   client does **zero on-chain crypto**: every signing/settlement op is an HTTP call to
   the ATXP accounts server. Only `ATXPAccountHandler` is used; the x402/MPP local payment
   makers are never instantiated. **This is what chit's root package builds.**
-- Self-custodial (Base/Solana wallet) — uses `@x402/evm`, EIP-712 signing,
+- Self-custodial (Base/Solana wallet): uses `@x402/evm`, EIP-712 signing,
   `X402ProtocolHandler`/`MPPProtocolHandler`. **Built and live-verified
   (2026-08-06):** `x402signer/` implements EIP-3009 "exact"-scheme signing on
-  EVM chains as an `atxp.Account` — see its package doc comment for the full
+  EVM chains as an `atxp.Account`. See its package doc comment for the full
   scope. Still out of scope: the `upto`/Permit2 x402 scheme, Solana, and MPP
   entirely. Rationale for building this despite the "hosted account only"
   default: the hosted/ATXP-native rail is restricted to ATXP's own
   first-party services for real settlement (see the pull-mode/IOU-conversion
-  notes above) — x402 (and MPP) are the actual open, direct-settlement rails
+  notes above). x402 (and MPP) are the actual open, direct-settlement rails
   third-party payments go through. Real 0.01 USDC settlement on Base mainnet
   confirmed via the on-chain `Transfer` event log.
 
   The x402 v2 `PaymentPayload`'s `accepted` field must carry the **full**
   matching `PaymentRequirements` (`scheme`, `network`, `asset`, `amount`,
-  `payTo`, `maxTimeoutSeconds`, `extra`), not just `{network, scheme}` — see
+  `payTo`, `maxTimeoutSeconds`, `extra`), not just `{network, scheme}`. See
   `coinbase/x402`'s `go/types/v2.go` `PaymentPayload` struct. A trimmed
   `accepted` still satisfies chit's own server-side `selectX402Accept`
   (it only reads `.network`/`.scheme`), so this only surfaces as a generic
@@ -253,31 +253,31 @@ A URL: `https://accounts.atxp.ai/?connection_token=<TOKEN>&account_id=<ID>`
 
 ## ATXP accounts-server endpoints (the hosted backend)
 
-All on `origin`. Auth header differs per endpoint — match exactly:
+All on `origin`. Auth header differs per endpoint: match exactly:
 
 | Endpoint | Method | Auth header | Body | Returns |
 |---|---|---|---|---|
-| `/me` | GET | `Bearer <token>` | — | `{accountId, …}` |
+| `/me` | GET | `Bearer <token>` | none | `{accountId, …}` |
 | `/sign` | POST | `Basic base64(token+":")` | `{paymentRequestId, codeChallenge, accountId?}` | `{jwt}` |
 | `/authorize/auto` | POST | `Basic base64(token+":")` | see below | `{protocol, credential, context?}` |
 | `/spend-permission` | POST | `Bearer <token>` | `{resourceUrl}` | `{spendPermissionToken}` |
 | `/pay` | POST | `Basic base64(token+":")` | `{destinations[], memo, paymentRequestId?}` | `{transactionId, chain, currency, …}` |
 | `/address_for_payment` | POST | `Basic base64(token+":")` | `{amount, currency, receiver, memo}` | `{sourceAddress, sourceNetwork?}` |
-| `/account/{id}/sources` | GET | none (Accept only) | — | `Source[]` |
+| `/account/{id}/sources` | GET | none (Accept only) | none | `Source[]` |
 
 `Basic` = `"Basic " + base64(token + ":")` (blank password, `atxpAccount.ts:6`).
 
 For the hosted MCP-tool path you only need **`/me`, `/sign`, `/authorize/auto`**
 (and optionally `/spend-permission`). `/pay` and `/address_for_payment` are the
-self-custodial push-mode path — not needed.
+self-custodial push-mode path, not needed.
 
-## Flow — calling an MCP tool (hosted account)
+## Flow: calling an MCP tool (hosted account)
 
 The whole client is a **fetch wrapper** around MCP's Streamable HTTP transport
 (`atxpClient.ts:83`, `atxpFetcher.ts:845`). In Go, implement it as a custom
 `http.RoundTripper` (or `*http.Client`) handed to the go-sdk Streamable HTTP transport.
 
-### Leg 1 — OAuth handshake (first call to an MCP server → 401)
+### Leg 1: OAuth handshake (first call to an MCP server → 401)
 
 `oAuth.ts` + `oAuthResource.ts`.
 
@@ -313,12 +313,12 @@ The whole client is a **fetch wrapper** around MCP's Streamable HTTP transport
 Token refresh (`oAuth.ts:fetch`): on 401 carrying `error="invalid_grant"`, refresh via
 `refresh_token` grant, retry once.
 
-### Leg 2 — payment challenge (tool call → payment required)
+### Leg 2: payment challenge (tool call → payment required)
 
 Trigger: HTTP **402**, or an MCP JSON-RPC **error code `-30402` or `-32042`** whose
 `data` carries `chargeAmount`, `x402`, `mpp`, `paymentRequestUrl`, `paymentRequestId`
 (`atxpFetcher.ts:471`, `:896`). For MCP the challenge arrives inside a 200 JSON-RPC body;
-TS synthesizes a fake 402 Response to feed the handler (`atxpFetcher.ts:764`) — in Go just
+TS synthesizes a fake 402 Response to feed the handler (`atxpFetcher.ts:764`); in Go just
 branch on the parsed error directly.
 
 Hosted path = `ATXPAccountHandler` only (`atxpAccountHandler.ts`):
@@ -327,7 +327,7 @@ Hosted path = `ATXPAccountHandler` only (`atxpAccountHandler.ts`):
    (`chargeAmount`), `destination`/`receiver`, `paymentRequirements` (from `x402.accepts`,
    non-`atxp` networks), `challenges` (from `mpp`). If destination still unknown, GET
    `paymentRequestUrl` and read `options[0]`.
-2. POST `/authorize/auto` (Basic) — body:
+2. POST `/authorize/auto` (Basic). Body:
    ```json
    {"protocols":["atxp"],            // +"x402" if paymentRequirements present, +"mpp" if challenges
     "amount":"<str>","receiver":"<dest>","memo":"<iss/payee>","currency":"USDC",
@@ -349,14 +349,14 @@ Hosted path = `ATXPAccountHandler` only (`atxpAccountHandler.ts`):
 
 | Concern | Go |
 |---|---|
-| MCP Streamable HTTP client | `github.com/modelcontextprotocol/go-sdk` — inject custom `*http.Client`/RoundTripper |
+| MCP Streamable HTTP client | `github.com/modelcontextprotocol/go-sdk`; inject custom `*http.Client`/RoundTripper |
 | OAuth token grants + PKCE | `golang.org/x/oauth2` (S256 PKCE); auth-code only, no refresh-token grant wired (any expired/401 token triggers a full re-handshake instead) |
-| PRM/AS discovery (RFC 9728/8414) + DCR (RFC 7591) | plain `net/http` — ~150 lines, no single lib |
+| PRM/AS discovery (RFC 9728/8414) + DCR (RFC 7591) | plain `net/http`, ~150 lines, no single lib |
 | PKCE values | `crypto/rand`, `crypto/sha256`, `encoding/base64` RawURLEncoding |
-| JWT for code_challenge | **none** — `/sign` returns it; just forward the string |
+| JWT for code_challenge | **none**: `/sign` returns it; just forward the string |
 | On-chain signing | **none** for hosted path |
 | Token/PKCE/cred store | small interface; in-memory map is fine (mirror `OAuthDb`) |
 
 `OAuthDb` surface mirrored: `save/getPKCEValues(userId, state)`,
-`save/getClientCredentials(issuer)`, `save/getAccessToken(userId, url)` — note token
+`save/getClientCredentials(issuer)`, `save/getAccessToken(userId, url)`. Note token
 lookup walks parent paths (`oAuthResource.ts:getAccessToken`).
