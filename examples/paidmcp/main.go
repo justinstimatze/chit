@@ -120,16 +120,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("fetch account sources: %v", err)
 	}
-	// /me only reports the account's mainnet addresses; for live x402 testing
-	// against a testnet facilitator, mirror the "base" address under
-	// "base_sepolia" too — same EOA, valid on both, and this is the only way
-	// to get an eip155:84532 accept advertised at all.
-	for _, s := range sources {
-		if s.Chain == "base" {
-			sources = append(sources, server.Source{Chain: "base_sepolia", Address: s.Address})
-			break
-		}
-	}
 	log.Printf("merchant chain addresses: %+v", sources)
 
 	m, err := server.New(server.Config{
@@ -188,6 +178,12 @@ func main() {
 	lastChallenge := map[string]server.X402PaymentRequirements{}
 	lastPaymentID := map[string]string{}
 
+	// Known rough edge: the MCP Streamable HTTP transport's own "initialize"
+	// handshake can span more than one raw HTTP request to /mcp. This gate
+	// charges per HTTP request, not per logical MCP session, so a client
+	// whose transport issues a follow-up request without a fresh credential
+	// gets charged, or challenged, again. Fine for this example; a real
+	// merchant serving MCP traffic would want to charge per tool call instead.
 	paymentGate := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ti := auth.TokenInfoFromContext(r.Context())
@@ -232,16 +228,17 @@ func main() {
 				return
 			}
 
-			log.Printf("payment settled for %s, serving request", sub)
-			next.ServeHTTP(w, r)
-
 			if session != nil {
 				if err := m.CloseSession(context.Background(), session); err != nil {
 					log.Printf("CloseSession error: %v", err)
-				} else {
-					log.Printf("session closed/settled, spent=%s", session.Spent().String())
+					http.Error(w, "settlement failed: "+err.Error(), http.StatusPaymentRequired)
+					return
 				}
+				log.Printf("session closed/settled, spent=%s", session.Spent().String())
 			}
+
+			log.Printf("payment settled for %s, serving request", sub)
+			next.ServeHTTP(w, r)
 		})
 	}
 

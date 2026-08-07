@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -123,6 +124,39 @@ func DetectProtocol(h interface{ Get(string) string }) *CredentialDetection {
 		}
 	}
 	return nil
+}
+
+// ExtractX402PayerAddress returns the actual signing address from an x402
+// credential's authorization.from field. Unlike a PaymentRequest's User field
+// (sourceAccountId), this address is cryptographically tied to the EIP-3009
+// signature and cannot be forged, so it is the right thing to rate-limit,
+// cap spend on, or blocklist against on the merchant's own side.
+//
+// See docs/PROTOCOL.md's fraud-block bypass note: ATXP's account-standing
+// checks (fraud_blocked, etc.) are not enforced on sourceAccountId for the
+// x402 settlement path, so merchants that need their own abuse protection
+// should gate on this address, not on anything from PaymentRequest.User.
+//
+// Returns an error if the credential is not a parseable x402 credential or
+// carries no authorization.from field (e.g. it is not the "exact" scheme).
+func ExtractX402PayerAddress(credential string) (string, error) {
+	payload := parseCredentialJSON(credential)
+	if payload == nil {
+		return "", fmt.Errorf("server: credential is not valid base64 or raw JSON")
+	}
+	inner, ok := payload["payload"].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("server: credential has no payload field (not an x402 v2 credential)")
+	}
+	auth, ok := inner["authorization"].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("server: credential's payload has no authorization field")
+	}
+	from, _ := auth["from"].(string)
+	if from == "" {
+		return "", fmt.Errorf("server: credential's authorization has no from address")
+	}
+	return from, nil
 }
 
 // parseCredentialJSON parses a credential that may be base64-encoded JSON or raw

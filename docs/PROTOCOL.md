@@ -117,15 +117,167 @@ ATXP has **two account types** (`atxpFetcher.ts:238`):
   the ATXP accounts server. Only `ATXPAccountHandler` is used; the x402/MPP local payment
   makers are never instantiated. **This is what gemot builds.**
 - Self-custodial (Base/Solana wallet) — uses `@x402/evm`, EIP-712 signing,
-  `X402ProtocolHandler`/`MPPProtocolHandler`. **Partially built (2026-08-05):**
-  `x402signer/` implements EIP-3009 "exact"-scheme signing on EVM chains as an
-  `atxp.Account` — see its package doc comment for the full scope. Still out
-  of scope: the `upto`/Permit2 x402 scheme, Solana, and MPP entirely.
-  Rationale for building this despite the "hosted account only" default: the
-  hosted/ATXP-native rail turns out to be restricted to ATXP's own first-party
-  services for real settlement (see the pull-mode/IOU-conversion notes above)
-  — x402 (and MPP) are the actual open, direct-settlement rails third-party
-  payments go through.
+  `X402ProtocolHandler`/`MPPProtocolHandler`. **Built and live-verified
+  (2026-08-06):** `x402signer/` implements EIP-3009 "exact"-scheme signing on
+  EVM chains as an `atxp.Account` — see its package doc comment for the full
+  scope. Still out of scope: the `upto`/Permit2 x402 scheme, Solana, and MPP
+  entirely. Rationale for building this despite the "hosted account only"
+  default: the hosted/ATXP-native rail is restricted to ATXP's own
+  first-party services for real settlement (see the pull-mode/IOU-conversion
+  notes above) — x402 (and MPP) are the actual open, direct-settlement rails
+  third-party payments go through. Real 0.01 USDC settlement on Base mainnet
+  confirmed via the on-chain `Transfer` event log.
+
+  The x402 v2 `PaymentPayload`'s `accepted` field must carry the **full**
+  matching `PaymentRequirements` (`scheme`, `network`, `asset`, `amount`,
+  `payTo`, `maxTimeoutSeconds`, `extra`), not just `{network, scheme}` — see
+  `coinbase/x402`'s `go/types/v2.go` `PaymentPayload` struct. A trimmed
+  `accepted` still satisfies chit's own server-side `selectX402Accept`
+  (it only reads `.network`/`.scheme`), so this only surfaces as a generic
+  `500` from ATXP's real `/verify/x402` and `/settle/x402`.
+
+### Payment modes: what actually works (live-tested 2026-08-06)
+
+| Payer identity | Destination | Resource gate | Rail | Result |
+|---|---|---|---|---|
+| `ATXPAccount` (OAuth) | ATXP's own first-party service | OAuth 401 | ATXP-native | **Works** (pre-existing, validated in production) |
+| `ATXPAccount` (OAuth) | Third-party merchant (not ATXP) | OAuth 401 | ATXP-native (`/authorize/auto`) | **Fails**: `403 DESTINATION_NOT_ALLOWED` |
+| `ATXPAccount`, raw `SourceAccountToken` (no OAuth Connection) | Third-party merchant | bare 402 (on-demand pull) | ATXP-native (`/charge`) | **Fails**: declines the pull, issues a 402 challenge instead |
+| `X402SignerAccount` alone (no ATXP account) | Third-party merchant | OAuth 401 | x402 | **Fails**: `SignChallenge` errors immediately, by design, no ATXP identity to OAuth with |
+| Hybrid: `ATXPAccount` (identity) + `X402SignerAccount` (`Authorize`) | Third-party merchant | OAuth 401 | x402 "exact" | **Works**, live-verified, real 0.01 USDC on Base mainnet, confirmed on-chain |
+| `X402SignerAccount` alone (no ATXP account) | Third-party merchant | bare 402, no OAuth gate at all | x402 "exact" | **Works**, live-verified, real 0.01 USDC on Base mainnet, confirmed on-chain three times. This is the actual stranger-to-stranger case from the original deferred plan. The merchant must still supply an existing, resolvable ATXP account id as the nominal `sourceAccountId` on `/payment-request` (a made-up placeholder like `"anonymous-x402-payer"` gets a `500`), but the merchant's own account id works fine, so this imposes no real dependency on the payer at all. |
+
+**Fraud-block bypass, confirmed live:** a fresh `agent register`-ed orphan account (unfunded, `fraud_blocked`, can't `/sign` or pay natively) still worked fine as the nominal `sourceAccountId` on this path, real settlement, real money, no rejection anywhere. Whatever gates that account from `/sign`/native pay is not checked on `/payment-request` → `/verify/x402` → `/settle/x402` at all. Since this field never has to correspond to the actual signer anyway (see above), this isn't a merchant "tricking" a specific blocked payer, it's that this rail doesn't enforce account standing on `sourceAccountId` for anyone.
+
+In every row below, "Merchant" is the third-party resource (`examples/paidmcp`/`bareserver`, our own account), never ATXP itself, except row 1, where ATXP's own service *is* the merchant.
+
+**1. `ATXPAccount` to ATXP's own first-party service. Works.**
+
+```mermaid
+sequenceDiagram
+    participant Payer
+    participant ATXP as ATXP (service + backend)
+    Payer->>ATXP: request, no token
+    ATXP-->>Payer: 401
+    Payer->>ATXP: OAuth (DCR + PKCE)
+    ATXP-->>Payer: access token
+    Payer->>ATXP: request + Bearer token
+    ATXP-->>Payer: 402 challenge
+    Payer->>ATXP: /authorize/auto
+    ATXP-->>Payer: credential, settled internally
+    Payer->>ATXP: retry + credential
+    ATXP-->>Payer: 200, result
+```
+
+**2. `ATXPAccount` to a third-party merchant, native rail. Fails.**
+
+```mermaid
+sequenceDiagram
+    participant Payer
+    participant Merchant
+    participant ATXP as ATXP backend
+    Payer->>Merchant: request, no token
+    Merchant-->>Payer: 401
+    Payer->>ATXP: OAuth
+    ATXP-->>Payer: access token
+    Payer->>Merchant: request + Bearer token
+    Merchant-->>Payer: 402 challenge, paymentRequestId
+    Payer->>ATXP: /authorize/auto, destination = Merchant
+    ATXP-->>Payer: 403 DESTINATION_NOT_ALLOWED
+```
+
+**3. Raw `SourceAccountToken` pull, no OAuth Connection. Fails.**
+
+```mermaid
+sequenceDiagram
+    participant Merchant
+    participant ATXP as ATXP backend
+    Merchant->>ATXP: /charge, sourceAccountToken = payer's raw token
+    ATXP-->>Merchant: 402, declines the pull
+```
+
+**4. `X402SignerAccount` alone against an OAuth-gated merchant. Fails.**
+
+```mermaid
+sequenceDiagram
+    participant Payer as Payer, no ATXP account
+    participant Merchant
+    Payer->>Merchant: request, no token
+    Merchant-->>Payer: 401, OAuth required
+    Payer->>Payer: SignChallenge() errors, self-custodial can't OAuth
+```
+
+**5. Hybrid account (`ATXPAccount` identity + `X402SignerAccount` signing) against an OAuth-gated merchant. Works, on-chain verified.**
+
+```mermaid
+sequenceDiagram
+    participant Payer as Payer, ATXP identity + raw key
+    participant Merchant
+    participant ATXP as ATXP backend
+    participant Chain as Base mainnet
+    Payer->>Merchant: request, no token
+    Merchant-->>Payer: 401
+    Payer->>ATXP: OAuth, via ATXPAccount identity
+    ATXP-->>Payer: access token
+    Payer->>Merchant: request + Bearer token
+    Merchant-->>Payer: 402 challenge, x402 accepts[]
+    Payer->>Payer: sign EIP-3009 with raw key
+    Payer->>Merchant: retry + X-PAYMENT credential
+    Merchant->>ATXP: /verify/x402, /settle/x402
+    ATXP->>Chain: broadcast transferWithAuthorization
+    Chain-->>ATXP: confirmed
+    ATXP-->>Merchant: settled
+    Merchant-->>Payer: 200, result
+```
+
+**6. `X402SignerAccount` alone against a bare-402 merchant, true stranger to stranger. Works, on-chain verified twice.**
+
+```mermaid
+sequenceDiagram
+    participant Payer as Payer, no ATXP account at all
+    participant Merchant as Merchant, has an ATXP account
+    participant ATXP as ATXP backend
+    participant Chain as Base mainnet
+    Payer->>Merchant: request, no auth at all
+    Merchant-->>Payer: 402, bare x402 challenge, no OAuth gate
+    Payer->>Payer: sign EIP-3009 with raw key
+    Payer->>Merchant: retry + X-PAYMENT credential
+    Merchant->>ATXP: /payment-request, sourceAccountId = Merchant's own id
+    ATXP-->>Merchant: paymentRequestId
+    Merchant->>ATXP: /verify/x402, /settle/x402
+    ATXP->>Chain: broadcast transferWithAuthorization
+    Chain-->>ATXP: confirmed
+    ATXP-->>Merchant: settled
+    Merchant-->>Payer: 200, result
+```
+
+**7. Two agents swapping money both ways. Each direction repeats case 6 independently, so each agent needs its own ATXP account for the direction where it's receiving.**
+
+```mermaid
+sequenceDiagram
+    participant A as Agent A, own ATXP account
+    participant B as Agent B, own ATXP account
+    participant ATXP as ATXP backend
+    participant Chain as Base mainnet
+    Note over A,B: A pays B, B is the merchant here
+    A->>B: request, no auth
+    B-->>A: 402, bare x402 challenge
+    A->>A: sign EIP-3009 with A's key
+    A->>B: retry + X-PAYMENT credential
+    B->>ATXP: /payment-request, /verify, /settle, using B's account
+    ATXP->>Chain: broadcast transferWithAuthorization
+    Chain-->>ATXP: confirmed
+    B-->>A: 200, result
+    Note over A,B: B pays A, A is the merchant here
+    B->>A: request, no auth
+    A-->>B: 402, bare x402 challenge
+    B->>B: sign EIP-3009 with B's key
+    B->>A: retry + X-PAYMENT credential
+    A->>ATXP: /payment-request, /verify, /settle, using A's account
+    ATXP->>Chain: broadcast transferWithAuthorization
+    Chain-->>ATXP: confirmed
+    A-->>B: 200, result
+```
 
 Confirmed: **no Go (or Python-native) ATXP SDK exists.** `atxp-dev` is ~17 repos, all
 TS/JS. The only native SDK is `@atxp/client` (npm). Python/other support is framework
