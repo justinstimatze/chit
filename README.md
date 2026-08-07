@@ -1,8 +1,9 @@
 # chit
 
 **Unofficial Go client and merchant library for [ATXP](https://docs.atxp.ai).**
-chit is not affiliated with, authorized by, or endorsed by Circuit & Chisel, the
-makers of ATXP. For the official, supported SDK, use their TypeScript one:
+chit is not affiliated with, authorized by, or endorsed by
+[Circuit & Chisel](https://circuitandchisel.com/), the makers of ATXP. For the
+official, supported SDK, use their TypeScript one:
 https://github.com/atxp-dev/sdk
 
 chit lets a Go program act as an ATXP **client** (pay for MCP tools), a
