@@ -146,7 +146,22 @@ func main() {
 				http.Error(w, "settlement failed: "+err.Error(), http.StatusPaymentRequired)
 				return
 			}
-			log.Printf("session closed/settled, spent=%s", session.Spent().String())
+			// session.Charge above only checked against what THIS merchant
+			// advertised; it says nothing about what the payer actually
+			// signed. The x402 "exact" scheme settles for exactly the signed
+			// authorization.value, which a modified client could set lower
+			// than the accepted.amount it self-reports elsewhere in the same
+			// credential. Verify the real settled amount before treating the
+			// request as paid for; do not rely on CloseSession's nil error
+			// alone.
+			result, _ := session.SettleResult()
+			settledAmount, err := server.ParseAmount(result.SettledAmount)
+			if err != nil || price.GreaterThan(settledAmount) {
+				log.Printf("settled amount %q is short of the required %s", result.SettledAmount, price.String())
+				http.Error(w, "settled amount did not meet the required price", http.StatusPaymentRequired)
+				return
+			}
+			log.Printf("session closed/settled, spent=%s settledAmount=%s", session.Spent().String(), result.SettledAmount)
 		}
 
 		log.Println("payment settled, serving request")

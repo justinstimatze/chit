@@ -166,6 +166,38 @@ func TestCloseSessionSettlesOnceForSpentAmount(t *testing.T) {
 	}
 }
 
+func TestCloseSessionExposesSettleResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"txHash":"0xabc","settledAmount":"0.005"}`)
+	}))
+	defer srv.Close()
+
+	m := newTestMerchantWithAuthServer(t, srv.URL, srv.Client())
+	session := m.OpenPaymentSession(
+		CredentialDetection{Protocol: ProtocolATXP, Credential: `{"sourceAccountId":"atxp:caller","options":[{"amount":"0.01"}]}`},
+		SettlementContext{},
+	)
+	if _, ok := session.SettleResult(); ok {
+		t.Fatal("SettleResult should report unset before Close")
+	}
+	if !session.Charge(mustAmount(t, "0.005")) {
+		t.Fatal("charge should succeed")
+	}
+	if err := m.CloseSession(context.Background(), session); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	result, ok := session.SettleResult()
+	if !ok {
+		t.Fatal("SettleResult should report set after a successful Close")
+	}
+	if result.SettledAmount != "0.005" {
+		t.Errorf("SettledAmount = %q, want 0.005. A caller must be able to check the REAL settled amount before crediting anything, not just that Close returned no error", result.SettledAmount)
+	}
+	if result.TxHash == nil || *result.TxHash != "0xabc" {
+		t.Errorf("TxHash = %v, want 0xabc", result.TxHash)
+	}
+}
+
 func TestCloseSessionNoopWhenNeverCharged(t *testing.T) {
 	var settleCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

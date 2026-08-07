@@ -30,6 +30,24 @@ type PaymentSession struct {
 	spent        Amount
 	settled      bool
 	settling     bool // guards against re-entrant Close calls
+
+	settleResult    SettleResult
+	settleResultSet bool
+}
+
+// SettleResult returns the result of the settle call CloseSession made, and
+// whether one has happened yet (false before Close, or if Close no-op'd on a
+// zero-spend one-shot credential). Check this after CloseSession succeeds
+// before trusting the session as paid for its full intended amount: for the
+// x402 "exact" scheme in particular, chit cannot verify that a credential's
+// self-reported accepted.amount matches what the payer actually signed in
+// authorization.value. The facilitator only ever settles the real signed
+// value; SettledAmount is the actual amount that moved on-chain. Compare it
+// against your own expected price before crediting anything.
+func (s *PaymentSession) SettleResult() (SettleResult, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.settleResult, s.settleResultSet
 }
 
 // Charge records a charge of cost against the session. It returns false (and
@@ -133,6 +151,8 @@ func (m *Merchant) CloseSession(ctx context.Context, session *PaymentSession) er
 		return settleErr
 	}
 	session.settled = true
+	session.settleResult = result
+	session.settleResultSet = true
 	tx := "<already-settled>"
 	if result.TxHash != nil {
 		tx = *result.TxHash
