@@ -2,9 +2,38 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 )
+
+// UnderpaymentError is returned by CloseSession when a settle call succeeded
+// but for less than the amount actually charged locally (Spent). Real money
+// moved, so there is nothing to retry, but the caller must not treat this as
+// a completed payment: do not serve the resource or credit anything for it.
+//
+// This is deliberately not a network/infrastructure failure: it means the
+// settle response itself came back clean, just short. See CloseSession's
+// doc comment for why this check exists (the x402 "exact" scheme in
+// particular can settle for less than a credential claims elsewhere in the
+// same payload).
+type UnderpaymentError struct {
+	Spent   Amount
+	Settled Amount
+	// ParseError is set instead of a meaningful Settled when the settle
+	// response's amount could not be parsed at all. Treated as a failure
+	// too, since an amount that can't be verified isn't a verified amount.
+	ParseError error
+}
+
+func (e *UnderpaymentError) Error() string {
+	if e.ParseError != nil {
+		return fmt.Sprintf("atxp server: settle response amount was unparseable (charged %s): %v", e.Spent.String(), e.ParseError)
+	}
+	return fmt.Sprintf("atxp server: settled amount %s is less than the %s actually charged", e.Settled.String(), e.Spent.String())
+}
+
+func (e *UnderpaymentError) Unwrap() error { return e.ParseError }
 
 // PaymentSession accumulates local charges against one detected payment
 // credential across multiple RequirePayment calls, so N calls within one
@@ -150,6 +179,27 @@ func (m *Merchant) CloseSession(ctx context.Context, session *PaymentSession) er
 		}
 		return settleErr
 	}
+
+	// The /settle call succeeding is not the same as settling for enough. For
+	// the x402 "exact" scheme in particular, the facilitator settles for
+	// exactly whatever authorization.value the payer actually signed, which a
+	// credential can misreport relative to the accepted.amount it claims
+	// elsewhere in the same payload. chit's local cap check (session.Charge)
+	// only verifies against what THIS merchant advertised, never against the
+	// credential's real signed value. Treat an underpayment as a settle
+	// failure: real money moved, so there is nothing to retry, but the caller
+	// must not serve or credit anything for it. Fail closed on an unparseable
+	// amount too, since an amount we can't verify is not a verified amount.
+	settled, parseErr := ParseAmount(result.SettledAmount)
+	if parseErr != nil || spent.GreaterThan(settled) {
+		session.settled = true
+		session.settleResult = result
+		session.settleResultSet = true
+		underErr := &UnderpaymentError{Spent: spent, Settled: settled, ParseError: parseErr}
+		m.logger.Errorf("settle_underpaid_at_close protocol=%s spent=%s settledAmount=%q: %v", protocol, spent.String(), result.SettledAmount, underErr)
+		return underErr
+	}
+
 	session.settled = true
 	session.settleResult = result
 	session.settleResultSet = true

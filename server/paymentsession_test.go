@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -195,6 +196,73 @@ func TestCloseSessionExposesSettleResult(t *testing.T) {
 	}
 	if result.TxHash == nil || *result.TxHash != "0xabc" {
 		t.Errorf("TxHash = %v, want 0xabc", result.TxHash)
+	}
+}
+
+func TestCloseSessionFailsClosedOnUnderpayment(t *testing.T) {
+	// The credential's self-reported accepted.amount matched the merchant's
+	// advertised price ($0.01, so the local session.Charge cap check passed),
+	// but the facilitator only actually settled $0.003, the x402 "exact"
+	// scenario this whole check exists for.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"txHash":"0xabc","settledAmount":"0.003"}`)
+	}))
+	defer srv.Close()
+
+	m := newTestMerchantWithAuthServer(t, srv.URL, srv.Client())
+	session := m.OpenPaymentSession(
+		CredentialDetection{Protocol: ProtocolX402, Credential: base64.StdEncoding.EncodeToString([]byte(`{}`))},
+		SettlementContext{PaymentRequirements: &X402PaymentRequirements{Accepts: []X402PaymentOption{{Amount: "10000"}}}}, // 0.01 cap
+	)
+	if !session.Charge(mustAmount(t, "0.01")) {
+		t.Fatal("charge should succeed: 0.01 is within the 0.01 cap")
+	}
+
+	err := m.CloseSession(context.Background(), session)
+	if err == nil {
+		t.Fatal("CloseSession should fail closed: settled 0.003 is less than the 0.01 charged")
+	}
+	var underErr *UnderpaymentError
+	if !errors.As(err, &underErr) {
+		t.Fatalf("error = %v, want an *UnderpaymentError", err)
+	}
+	if underErr.Spent.String() != "0.01" || underErr.Settled.String() != "0.003" {
+		t.Errorf("UnderpaymentError = {Spent:%s Settled:%s}, want {0.01 0.003}", underErr.Spent.String(), underErr.Settled.String())
+	}
+
+	// Real money moved and there's nothing to retry, so the session is
+	// terminal. A second Close must still stay a no-op, not re-settle.
+	if err := m.CloseSession(context.Background(), session); err != nil {
+		t.Fatalf("second CloseSession should no-op, got: %v", err)
+	}
+
+	result, ok := session.SettleResult()
+	if !ok || result.SettledAmount != "0.003" {
+		t.Errorf("SettleResult should still be visible after an underpayment failure, got ok=%v result=%+v", ok, result)
+	}
+}
+
+func TestCloseSessionFailsClosedOnUnparseableSettledAmount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"txHash":"0xabc","settledAmount":"not-a-number"}`)
+	}))
+	defer srv.Close()
+
+	m := newTestMerchantWithAuthServer(t, srv.URL, srv.Client())
+	session := m.OpenPaymentSession(
+		CredentialDetection{Protocol: ProtocolATXP, Credential: `{"sourceAccountId":"atxp:caller","options":[{"amount":"0.01"}]}`},
+		SettlementContext{},
+	)
+	if !session.Charge(mustAmount(t, "0.01")) {
+		t.Fatal("charge should succeed")
+	}
+	err := m.CloseSession(context.Background(), session)
+	if err == nil {
+		t.Fatal("CloseSession should fail closed on an unparseable settled amount, not assume it was enough")
+	}
+	var underErr *UnderpaymentError
+	if !errors.As(err, &underErr) || underErr.ParseError == nil {
+		t.Fatalf("error = %v, want an *UnderpaymentError with ParseError set", err)
 	}
 }
 
