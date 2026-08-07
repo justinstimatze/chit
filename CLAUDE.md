@@ -81,9 +81,10 @@ go test -tags serverlive -run TestLive ./server/... # merchant live; needs funde
 ```
 
 CI (`.github/workflows/ci.yml`) runs build/vet/gofmt/test/golangci-lint, plus
-`govulncheck`, `gitleaks`, and `semgrep` as separate jobs. Mirror the fast
-checks locally before pushing: `git config core.hooksPath scripts/githooks`
-once, then `scripts/githooks/pre-commit` runs on every commit.
+`govulncheck`, `gitleaks`, and `semgrep` as separate jobs; `.github/workflows/codeql.yml`
+runs CodeQL on push/PR and weekly. Mirror the fast checks locally before pushing:
+`git config core.hooksPath scripts/githooks` once, then `scripts/githooks/pre-commit`
+runs on every commit.
 
 A freshly `npx atxp@latest agent register`-ed account is an **orphan**, unfunded, and
 `fraud_blocked` — it cannot `/sign` or pay. The web `/fund` page funds the email-login
