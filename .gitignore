@@ -1,0 +1,15 @@
+# Go
+*.exe
+*.test
+*.out
+/dist/
+# stray binaries from `go build ./examples/...` with no -o (no extension on Linux/macOS)
+/paidmcp
+/client
+/x402stranger
+
+# Local secrets / scratch, never commit ATXP credentials
+.atxp/
+*.local
+.notes/
+.scratch/

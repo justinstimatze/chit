@@ -1,0 +1,34 @@
+#!/bin/sh
+# Mirrors the fast checks CI enforces (see .github/workflows/ci.yml), so a
+# failure here is a failure there. govulncheck/gitleaks/semgrep run in CI
+# only — too slow to run on every commit.
+#
+# Install once: git config core.hooksPath scripts/githooks
+
+set -e
+
+echo "gofmt..."
+fmt_out="$(gofmt -l .)"
+if [ -n "$fmt_out" ]; then
+	echo "The following files are not gofmt-formatted:"
+	echo "$fmt_out"
+	exit 1
+fi
+
+echo "go vet..."
+go vet ./...
+
+echo "go build..."
+go build ./...
+
+echo "go test..."
+go test ./...
+
+if command -v golangci-lint >/dev/null 2>&1; then
+	echo "golangci-lint..."
+	golangci-lint run ./...
+else
+	echo "golangci-lint not installed locally, skipping (CI will still run it)"
+fi
+
+echo "pre-commit checks passed"
