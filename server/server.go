@@ -49,8 +49,15 @@ type Config struct {
 	// https://auth.atxp.ai.
 	AuthServer string
 
-	// PayeeName labels the merchant in challenges and metadata. Defaults to
-	// "An ATXP Server".
+	// PayeeName labels the merchant in challenges and metadata, and doubles as
+	// the dynamic-client-registration client_name sent to the authorization
+	// server. Defaults to "An ATXP Server" — set this to something distinctive
+	// in production. The auth server treats client_name as claimed once
+	// registered; with the default Store (in-memory, lost on restart) a second
+	// process registering under the same unset-default name, whether a
+	// restart of this merchant or an unrelated one reusing the same
+	// ConnectionToken, gets a permanent 409 for that name, with no way to
+	// recover the original client_secret. See Store's doc comment.
 	PayeeName string
 
 	// Currency is the settlement currency. Defaults to "USDC".
@@ -70,7 +77,12 @@ type Config struct {
 	ExpectedAudience string
 
 	// Store persists DCR client credentials (keyed by AS issuer). Defaults to a
-	// process-local in-memory store.
+	// process-local in-memory store, which loses its client_secret on every
+	// restart. The authorization server does not let a new registration
+	// reclaim an already-claimed client_name, so a restarted (or
+	// ConnectionToken-sharing) merchant that doesn't set a distinctive
+	// PayeeName will permanently fail dynamic client registration with a 409.
+	// Production deployments should supply a persistent Store implementation.
 	Store atxp.Store
 
 	// HTTPClient is used for all authorization-server calls. Optional.
