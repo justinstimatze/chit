@@ -17,6 +17,21 @@ import (
 // doc comment for why this check exists (the x402 "exact" scheme in
 // particular can settle for less than a credential claims elsewhere in the
 // same payload).
+//
+// Confirmed live against production (2026-08-07, Base mainnet): for x402
+// "exact", auth.atxp.ai's own /settle/x402 already rejects a credential
+// whose accepted.amount doesn't match its actual signed authorization.value
+// (HTTP 400, nothing settles), so this error path did not fire for that
+// specific attack shape; the AS closed it one layer down. This check is
+// still real defense-in-depth (a merchant-side pricing bug, or any future
+// change in the AS's behavior, would still need it), but for x402 exact its
+// load-bearing-ness is unconfirmed rather than demonstrated. Whether the AS
+// enforces the same consistency for the ATXP-native protocol or MPP is
+// untested. ATXP-native's trust model differs (the AS computes the charge
+// itself against its own ledger rather than verifying a third-party
+// signature), so the same attack shape may not even apply there; MPP is
+// simply unverified. Don't assume either has the same backend guarantee
+// x402 exact was shown to have.
 type UnderpaymentError struct {
 	Spent   Amount
 	Settled Amount
